@@ -8,7 +8,8 @@
 
 | 檔案 | 用途 |
 |------|------|
-| `Run SnapTranscript.bat` | 啟動器：檢查 Python / uv / venv，啟動 main.py |
+| `Run SnapTranscript.bat` | 薄殼啟動器：只呼叫 launcher.ps1 |
+| `launcher.ps1` | 環境檢查、首次安裝說明、建立 venv、啟動主程式 |
 | `main.py` | 主程式：GUI + 切割邏輯 + Gemini API 呼叫 |
 | `requirements.txt` | Python 套件清單 |
 | `.env` | API Key 儲存（不進版控） |
@@ -17,9 +18,9 @@
 ## 執行流程
 
 ```
-啟動.bat
-  └─ 環境檢查（Python / uv / venv）
-  └─ python main.py
+Run SnapTranscript.bat
+  └─ launcher.ps1
+        └─ 環境檢查（Python / uv / venv）
         └─ tkinter 視窗啟動
               ├─ 使用者選音訊檔
               ├─ 選切割模式（自動 20 分 / 自訂 HH:MM:SS）
