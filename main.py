@@ -132,11 +132,11 @@ def transcribe_segment(audio_path: str, client: genai.Client) -> str:
         time.sleep(2)
         audio_file = client.files.get(name=audio_file.name)
 
-    prompt = """請仔細聆聽這段會議音訊，將所有說話內容轉錄為繁體中文逐字稿。
+    prompt = """請仔細聆聽這段音訊，將所有說話內容以原始語言逐字轉錄。
 
 輸出規則：
 1. 純文字輸出，不需要時間戳、編號或任何 JSON / Markdown 格式
-2. 若原本說話語言為中文，直接轉錄；若為其他語言，翻譯成繁體中文
+2. 依照說話者使用的語言直接轉錄原文，不需翻譯
 3. 依說話順序逐句輸出，句與句之間空一行
 4. 若能明確分辨不同說話者，在每句前加「說話者 A：」「說話者 B：」等標記
 5. 背景雜音、靜默段、非語言音（笑聲、清喉嚨等）不需輸出
