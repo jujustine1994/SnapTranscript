@@ -10,6 +10,12 @@ cd /d "%~dp0"
 echo [INFO] Starting SnapTranscript...
 echo.
 
+:: Show welcome message in Chinese via PowerShell if venv not yet set up
+if not exist venv (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0setup_welcome.ps1"
+    pause
+)
+
 :: ======================================
 :: [1/3] Check Python
 :: ======================================
