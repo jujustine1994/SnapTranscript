@@ -1,4 +1,4 @@
-# SnapTranscript 啟動器
+﻿# SnapTranscript 啟動器
 # 負責環境檢查、首次安裝說明、建立 venv、啟動主程式
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
