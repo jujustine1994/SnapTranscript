@@ -204,7 +204,7 @@ class SnapTranscriptApp:
             self.frame_custom, width=28, height=5, font=("Consolas", 10)
         )
         self.cut_text.pack(fill="x")
-        self.cut_text.insert("1.0", "00:20:00\n00:40:00")
+        self.cut_text.insert("1.0", "00:30:00\n01:00:00")
         self.frame_custom.grid_remove()  # 預設隱藏
 
         # API Key
