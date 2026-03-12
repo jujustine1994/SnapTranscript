@@ -9,6 +9,7 @@ import time
 import queue
 import threading
 import subprocess
+import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
@@ -137,8 +138,8 @@ def transcribe_segment(audio_path: str, client: genai.Client) -> str:
 輸出規則：
 1. 純文字輸出，不需要時間戳、編號或任何 JSON / Markdown 格式
 2. 依照說話者使用的語言直接轉錄原文，不需翻譯
-3. 依說話順序逐句輸出，句與句之間空一行
-4. 若能明確分辨不同說話者，在每句前加「說話者 A：」「說話者 B：」等標記
+3. 同一說話者的連續發言合併為一個段落，說話者切換時才換段並空一行
+4. 每段開頭標註說話者：優先使用音訊中可辨識的真實姓名或職稱（如「財務長：」「主持人：」），無法辨識則使用「說話者 A：」「說話者 B：」等泛用標籤
 5. 背景雜音、靜默段、非語言音（笑聲、清喉嚨等）不需輸出
 6. 盡力辨識模糊語音，結合前後文補全語意，忠實呈現內容，不要摘要或省略"""
 
@@ -174,10 +175,13 @@ class SnapTranscriptApp:
         frame_file.grid(row=0, column=0, sticky="ew", **pad)
 
         self.file_var = tk.StringVar()
-        ttk.Entry(frame_file, textvariable=self.file_var, width=56, state="readonly").pack(
-            side="left", padx=(0, 8)
+        frame_file.columnconfigure(0, weight=1)
+        ttk.Entry(frame_file, textvariable=self.file_var, state="readonly").grid(
+            row=0, column=0, sticky="ew", padx=(0, 8)
         )
-        ttk.Button(frame_file, text="選擇檔案", command=self._select_file).pack(side="left")
+        ttk.Button(frame_file, text="選擇檔案", command=self._select_file).grid(
+            row=0, column=1
+        )
 
         # 切割設定
         frame_cut = ttk.LabelFrame(self.root, text=" 切割設定 ", padding=8)
@@ -216,15 +220,29 @@ class SnapTranscriptApp:
         self.save_key_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(frame_api, text="記住", variable=self.save_key_var).pack(side="left")
 
-        # 開始按鈕
-        self.btn_start = ttk.Button(
-            self.root, text="▶  開始轉錄", command=self._start, width=20
+        # 開始按鈕列（如何取得？ 左邊，開始轉錄 置中）
+        frame_start = tk.Frame(self.root)
+        frame_start.grid(row=3, column=0, sticky="ew", padx=14, pady=10)
+        frame_start.columnconfigure(0, weight=1)
+        frame_start.columnconfigure(1, weight=1)
+        frame_start.columnconfigure(2, weight=1)
+
+        link = tk.Label(
+            frame_start, text="如何取得 API Key？",
+            foreground="#0078D4", cursor="hand2", font=("", 9, "underline")
         )
-        self.btn_start.grid(row=3, column=0, pady=10)
+        link.grid(row=0, column=0, sticky="w")
+        link.bind("<Button-1>", lambda e: self._show_api_help())
+
+        self.btn_start = ttk.Button(
+            frame_start, text="▶  開始轉錄", command=self._start, width=20
+        )
+        self.btn_start.grid(row=0, column=1, ipady=6)
+
 
         # 進度區
         frame_progress = ttk.LabelFrame(self.root, text=" 處理進度 ", padding=8)
-        frame_progress.grid(row=4, column=0, sticky="ew", **pad)
+        frame_progress.grid(row=4, column=0, sticky="ew", padx=14, pady=(6, 14))
 
         self.progress_label = ttk.Label(frame_progress, text="等待開始...")
         self.progress_label.pack(anchor="w")
@@ -242,6 +260,46 @@ class SnapTranscriptApp:
         self.root.columnconfigure(0, weight=1)
 
     # ---- UI 互動 ----
+    def _show_api_help(self):
+        win = tk.Toplevel(self.root)
+        win.title("如何取得 Gemini API Key")
+        win.resizable(False, False)
+        win.grab_set()  # 鎖定焦點在此視窗
+
+        pad = {"padx": 20, "pady": 6}
+
+        ttk.Label(win, text="申請步驟", font=("", 11, "bold")).pack(anchor="w", padx=20, pady=(16, 4))
+
+        steps = [
+            "1. 點擊下方連結，前往 Google AI Studio",
+            "2. 使用 Google 帳號登入",
+            "3. 點擊「Create API key」",
+            "4. 選擇「Create API key in new project」",
+            "5. 複製產生的 Key，貼入 SnapTranscript 的 API Key 欄位",
+        ]
+        for step in steps:
+            ttk.Label(win, text=step, justify="left").pack(anchor="w", **pad)
+
+        # 注意事項
+        notice_frame = tk.Frame(win, background="#FFF3CD", padx=12, pady=10)
+        notice_frame.pack(fill="x", padx=20, pady=(8, 4))
+        tk.Label(
+            notice_frame,
+            text="⚠️  注意：申請後請確認 API Key 狀態顯示為「Free tier」，\n"
+                 "若顯示「Set up billing」代表尚未啟用免費方案，\n"
+                 "請勿輸入信用卡，直接使用即可享有免費額度。",
+            justify="left", background="#FFF3CD", foreground="#856404"
+        ).pack(anchor="w")
+
+        # 可點擊超連結
+        url = "https://aistudio.google.com/apikey"
+        link = tk.Label(win, text=url, foreground="#0078D4", cursor="hand2",
+                        font=("", 9, "underline"))
+        link.pack(anchor="w", padx=20, pady=(4, 16))
+        link.bind("<Button-1>", lambda e: webbrowser.open(url))
+
+        ttk.Button(win, text="關閉", command=win.destroy).pack(pady=(0, 16))
+
     def _toggle_cut_mode(self):
         if self.cut_mode.get() == "custom":
             self.frame_custom.grid()
