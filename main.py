@@ -19,7 +19,7 @@ from dotenv import load_dotenv, set_key
 # ---- 常數 ----
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 ENV_PATH = os.path.join(SCRIPT_DIR, ".env")
-DEFAULT_CHUNK_SECONDS = 20 * 60  # 預設 20 分鐘
+DEFAULT_CHUNK_SECONDS = 30 * 60  # 預設 30 分鐘
 MODEL_NAME = "gemini-flash-latest"
 
 
