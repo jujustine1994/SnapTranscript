@@ -189,7 +189,7 @@ class SnapTranscriptApp:
 
         self.cut_mode = tk.StringVar(value="auto")
         ttk.Radiobutton(
-            frame_cut, text="自動（每 20 分鐘切一段）",
+            frame_cut, text="自動（每 30 分鐘切一段）",
             variable=self.cut_mode, value="auto", command=self._toggle_cut_mode,
         ).grid(row=0, column=0, sticky="w")
         ttk.Radiobutton(
@@ -379,7 +379,7 @@ class SnapTranscriptApp:
 
             # 建立分段清單
             if cut_points is None:
-                # 自動模式：每 20 分鐘一刀
+                # 自動模式：每 30 分鐘一刀
                 auto_points = list(
                     range(DEFAULT_CHUNK_SECONDS, int(total_duration), DEFAULT_CHUNK_SECONDS)
                 )
