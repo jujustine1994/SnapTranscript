@@ -10,6 +10,9 @@ Clear-Host
 Write-Host "[INFO] Starting SnapTranscript..." -ForegroundColor Green
 Write-Host ""
 
+# 偵測系統架構
+$isArm64 = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture -eq 'Arm64'
+
 # ======================================
 # [1/4] 檢查 Python
 # ======================================
@@ -19,6 +22,13 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     Write-Host "  !! 缺少元件：Python" -ForegroundColor Red
     Write-Host "     Python 是執行 SnapTranscript 的基礎，沒有它程式無法啟動。" -ForegroundColor Gray
     Write-Host ""
+    if ($isArm64) {
+        Write-Host "  [!] 偵測到您的電腦是 ARM 架構（例如 Snapdragon X 系列筆電）。" -ForegroundColor Yellow
+        Write-Host "  [!] 如果您之前已安裝過 Python 但還是看到這個訊息，" -ForegroundColor Yellow
+        Write-Host "      請先到「設定 → 應用程式」搜尋 Python 並移除，" -ForegroundColor Yellow
+        Write-Host "      移除後重新點兩下啟動檔，我們會自動幫您安裝正確版本。" -ForegroundColor Yellow
+        Write-Host ""
+    }
     $ans = Read-Host "現在自動安裝 Python？[Y/n] - 直接按 Enter 代表同意"
     if ($ans -eq "" -or $ans -ieq "Y") {
         if (Get-Command winget -ErrorAction SilentlyContinue) {
@@ -105,6 +115,10 @@ if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
         }
         Write-Host ""
         Write-Host "[OK] ffmpeg 安裝完成，按任意鍵繼續..." -ForegroundColor Green
+        if ($isArm64) {
+            Write-Host "  [!] 注意：ffmpeg 目前沒有 Windows ARM 原生版本，" -ForegroundColor Yellow
+            Write-Host "      安裝的是 x64 版本，會透過模擬執行，功能正常但速度略慢。" -ForegroundColor Yellow
+        }
         pause
     } else {
         Write-Host "已取消。" -ForegroundColor Gray; pause; exit 1
