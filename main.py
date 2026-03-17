@@ -13,6 +13,7 @@ import webbrowser
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 
+import yt_dlp
 from google import genai
 from dotenv import load_dotenv, set_key
 
@@ -125,6 +126,44 @@ def cut_audio_segment(audio_path: str, start_sec: int, duration_sec: int, output
         )
 
 
+# ---- YouTube 下載 ----
+def download_youtube_audio(url: str, save_path: str, progress_callback=None) -> tuple[str, str]:
+    """用 yt-dlp 下載 YouTube 音訊（原始最佳音質轉 mp3），回傳 (音訊路徑, 影片標題)"""
+    # outtmpl 使用指定路徑（去掉副檔名讓 yt-dlp 自行補）
+    outtmpl = os.path.splitext(save_path)[0] + ".%(ext)s"
+    result = {}
+
+    def _hook(d):
+        if d["status"] == "downloading" and progress_callback:
+            downloaded = d.get("downloaded_bytes", 0)
+            total = d.get("total_bytes") or d.get("total_bytes_estimate", 0)
+            speed = (d.get("_speed_str") or "").strip()
+            progress_callback(downloaded, total, speed)
+        elif d["status"] == "finished":
+            result["pre_path"] = d["filename"]
+
+    ydl_opts = {
+        "format": "bestaudio/best",
+        "outtmpl": outtmpl,
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
+        "progress_hooks": [_hook],
+        "quiet": True,
+        "no_warnings": True,
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        title = info.get("title", "youtube_audio")
+
+    # postprocessor 轉完後副檔名一定是 .mp3
+    audio_path = os.path.splitext(save_path)[0] + ".mp3"
+
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(f"下載後找不到音訊檔案：{audio_path}")
+
+    return audio_path, title
+
+
 # ---- Gemini 逐字稿 ----
 def transcribe_segment(audio_path: str, client: genai.Client) -> str:
     """上傳音訊至 Gemini，取得純文字逐字稿"""
@@ -161,6 +200,10 @@ class SnapTranscriptApp:
         self.msg_queue: queue.Queue = queue.Queue()
         self.is_running = False
         self.temp_files: list[str] = []
+        self.source_mode = tk.StringVar(value="local")
+        self.yt_url_var = tk.StringVar()
+        self.yt_save_path_var = tk.StringVar()
+        self.yt_action = tk.StringVar(value="transcribe")
 
         self._build_ui()
         self._load_api_key()
@@ -170,18 +213,69 @@ class SnapTranscriptApp:
     def _build_ui(self):
         pad = {"padx": 14, "pady": 6}
 
-        # 音訊檔案
-        frame_file = ttk.LabelFrame(self.root, text=" 音訊檔案 ", padding=8)
-        frame_file.grid(row=0, column=0, sticky="ew", **pad)
+        # 音訊來源
+        frame_source = ttk.LabelFrame(self.root, text=" 音訊來源 ", padding=8)
+        frame_source.grid(row=0, column=0, sticky="ew", **pad)
+        frame_source.columnconfigure(0, weight=1)
 
+        # Radio：本地上傳 / YouTube 下載
+        radio_row = ttk.Frame(frame_source)
+        radio_row.grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Radiobutton(
+            radio_row, text="本地上傳",
+            variable=self.source_mode, value="local",
+            command=self._toggle_source_mode,
+        ).pack(side="left", padx=(0, 16))
+        ttk.Radiobutton(
+            radio_row, text="YouTube 下載",
+            variable=self.source_mode, value="youtube",
+            command=self._toggle_source_mode,
+        ).pack(side="left")
+
+        # 本地上傳 UI
+        self.frame_local = ttk.Frame(frame_source)
+        self.frame_local.grid(row=1, column=0, sticky="ew")
+        self.frame_local.columnconfigure(0, weight=1)
         self.file_var = tk.StringVar()
-        frame_file.columnconfigure(0, weight=1)
-        ttk.Entry(frame_file, textvariable=self.file_var, state="readonly").grid(
+        ttk.Entry(self.frame_local, textvariable=self.file_var, state="readonly").grid(
             row=0, column=0, sticky="ew", padx=(0, 8)
         )
-        ttk.Button(frame_file, text="選擇檔案", command=self._select_file).grid(
+        ttk.Button(self.frame_local, text="選擇檔案", command=self._select_file).grid(
             row=0, column=1
         )
+
+        # YouTube 下載 UI
+        self.frame_youtube = ttk.Frame(frame_source)
+        self.frame_youtube.grid(row=1, column=0, sticky="ew")
+        self.frame_youtube.columnconfigure(1, weight=1)
+        ttk.Label(self.frame_youtube, text="YouTube 網址：").grid(
+            row=0, column=0, sticky="w", padx=(0, 6)
+        )
+        ttk.Entry(self.frame_youtube, textvariable=self.yt_url_var).grid(
+            row=0, column=1, columnspan=2, sticky="ew"
+        )
+        ttk.Label(self.frame_youtube, text="儲存為：").grid(
+            row=1, column=0, sticky="w", padx=(0, 6), pady=(6, 0)
+        )
+        ttk.Entry(self.frame_youtube, textvariable=self.yt_save_path_var, state="readonly").grid(
+            row=1, column=1, sticky="ew", padx=(0, 8), pady=(6, 0)
+        )
+        ttk.Button(self.frame_youtube, text="另存新檔", command=self._select_save_path).grid(
+            row=1, column=2, pady=(6, 0)
+        )
+        action_frame = ttk.Frame(self.frame_youtube)
+        action_frame.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Radiobutton(
+            action_frame, text="下載後馬上轉錄",
+            variable=self.yt_action, value="transcribe",
+            command=self._update_btn_label,
+        ).pack(side="left", padx=(0, 16))
+        ttk.Radiobutton(
+            action_frame, text="只下載音訊（不需 API Key）",
+            variable=self.yt_action, value="download_only",
+            command=self._update_btn_label,
+        ).pack(side="left")
+        self.frame_youtube.grid_remove()  # 預設隱藏
 
         # 切割設定
         frame_cut = ttk.LabelFrame(self.root, text=" 切割設定 ", padding=8)
@@ -310,6 +404,31 @@ class SnapTranscriptApp:
     def _toggle_api_show(self):
         self.api_entry.config(show="" if self.api_entry.cget("show") else "•")
 
+    def _toggle_source_mode(self):
+        if self.source_mode.get() == "youtube":
+            self.frame_local.grid_remove()
+            self.frame_youtube.grid()
+        else:
+            self.frame_youtube.grid_remove()
+            self.frame_local.grid()
+        self._update_btn_label()
+        self.root.update_idletasks()
+
+    def _update_btn_label(self):
+        if self.source_mode.get() == "youtube" and self.yt_action.get() == "download_only":
+            self.btn_start.config(text="▶  開始下載")
+        else:
+            self.btn_start.config(text="▶  開始轉錄")
+
+    def _select_save_path(self):
+        path = filedialog.asksaveasfilename(
+            title="選擇儲存位置與檔名",
+            defaultextension=".mp3",
+            filetypes=[("MP3 音訊", "*.mp3"), ("所有檔案", "*.*")],
+        )
+        if path:
+            self.yt_save_path_var.set(path)
+
     def _select_file(self):
         path = filedialog.askopenfilename(
             title="選擇音訊檔案",
@@ -329,30 +448,47 @@ class SnapTranscriptApp:
 
     # ---- 執行邏輯 ----
     def _start(self):
-        audio_path = self.file_var.get()
         api_key = self.api_var.get().strip()
 
-        if not audio_path:
-            messagebox.showerror("錯誤", "請先選擇音訊檔案")
-            return
-        if not api_key:
-            messagebox.showerror("錯誤", "請輸入 Gemini API Key")
-            return
+        # 依來源模式驗證
+        if self.source_mode.get() == "local":
+            audio_path = self.file_var.get()
+            if not audio_path:
+                messagebox.showerror("錯誤", "請先選擇音訊檔案")
+                return
+            source_info = {"mode": "local", "path": audio_path, "action": "transcribe"}
+        else:
+            url = self.yt_url_var.get().strip()
+            save_path = self.yt_save_path_var.get().strip()
+            if not url:
+                messagebox.showerror("錯誤", "請輸入 YouTube 網址")
+                return
+            if not save_path:
+                messagebox.showerror("錯誤", "請點「另存新檔」選擇儲存位置與檔名")
+                return
+            source_info = {"mode": "youtube", "url": url, "save_path": save_path,
+                           "action": self.yt_action.get()}
 
-        # 解析自訂切割點
+        download_only = source_info["action"] == "download_only"
+
+        # 解析自訂切割點（只下載模式不需要）
         cut_points = None
-        if self.cut_mode.get() == "custom":
+        if not download_only and self.cut_mode.get() == "custom":
             try:
                 cut_points = parse_custom_cut_points(self.cut_text.get("1.0", "end"))
             except ValueError as e:
                 messagebox.showerror("格式錯誤", str(e))
                 return
 
-        # 儲存 API Key
-        if self.save_key_var.get():
-            set_key(ENV_PATH, "GEMINI_API_KEY", api_key)
+        # 儲存 API Key（只下載模式不需要）
+        if not download_only:
+            if not api_key:
+                messagebox.showerror("錯誤", "請輸入 Gemini API Key")
+                return
+            if self.save_key_var.get():
+                set_key(ENV_PATH, "GEMINI_API_KEY", api_key)
 
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(api_key=api_key) if not download_only else None
 
         # 重置 UI
         self.log_text.config(state="normal")
@@ -365,14 +501,42 @@ class SnapTranscriptApp:
         self.btn_start.config(state="disabled")
 
         t = threading.Thread(
-            target=self._worker, args=(audio_path, cut_points, client), daemon=True
+            target=self._worker, args=(source_info, cut_points, client), daemon=True
         )
         t.start()
 
-    def _worker(self, audio_path: str, cut_points: list[int] | None, client: genai.Client):
-        """背景執行緒：切割 + 上傳 + 轉錄 + 合併"""
+    def _worker(self, source_info: dict, cut_points: list[int] | None, client: genai.Client):
+        """背景執行緒：（下載）+ 切割 + 上傳 + 轉錄 + 合併"""
         temp_files: list[str] = []
         try:
+            if source_info["mode"] == "youtube":
+                self._log("正在下載 YouTube 音訊，請稍候...")
+
+                def _dl_progress(downloaded, total, speed):
+                    speed_str = f"  {speed}" if speed else ""
+                    if total > 0:
+                        pct = int(downloaded / total * 100)
+                        mb_done = downloaded / 1024 / 1024
+                        mb_total = total / 1024 / 1024
+                        self._set_progress(
+                            pct, 100,
+                            f"下載中... {pct}%  ({mb_done:.1f} / {mb_total:.1f} MB{speed_str})"
+                        )
+                    else:
+                        mb = downloaded / 1024 / 1024
+                        self._set_progress(0, 100, f"下載中... {mb:.1f} MB{speed_str}")
+
+                audio_path, _ = download_youtube_audio(
+                    source_info["url"], source_info["save_path"],
+                    progress_callback=_dl_progress,
+                )
+                self._log(f"下載完成：{os.path.basename(audio_path)}")
+                if source_info["action"] == "download_only":
+                    self._done(audio_path, success=True, download_only=True)
+                    return
+            else:
+                audio_path = source_info["path"]
+
             self._log(f"讀取音訊：{os.path.basename(audio_path)}")
             total_duration = get_audio_duration(audio_path)
             self._log(f"總時長：{seconds_to_hms(total_duration)}")
@@ -454,8 +618,8 @@ class SnapTranscriptApp:
     def _set_progress(self, current: int, total: int, label: str):
         self.msg_queue.put(("progress", (current, total, label)))
 
-    def _done(self, output_path: str, success: bool):
-        self.msg_queue.put(("done", (output_path, success)))
+    def _done(self, output_path: str, success: bool, download_only: bool = False):
+        self.msg_queue.put(("done", (output_path, success, download_only)))
 
     def _poll_queue(self):
         """每 100ms 從 queue 拉訊息更新 UI（主執行緒安全）"""
@@ -473,14 +637,20 @@ class SnapTranscriptApp:
                     self.progress_bar["value"] = current
                     self.progress_label.config(text=label)
                 elif msg_type == "done":
-                    output_path, success = data
+                    output_path, success, download_only = data
                     self.is_running = False
                     self.btn_start.config(state="normal")
                     if success:
-                        self.output_label.config(
-                            text=f"輸出：{output_path}", foreground="green"
-                        )
-                        messagebox.showinfo("完成", f"逐字稿已儲存：\n{output_path}")
+                        if download_only:
+                            self.output_label.config(
+                                text=f"已下載：{output_path}", foreground="green"
+                            )
+                            messagebox.showinfo("下載完成", f"音訊已儲存至：\n{output_path}")
+                        else:
+                            self.output_label.config(
+                                text=f"輸出：{output_path}", foreground="green"
+                            )
+                            messagebox.showinfo("完成", f"逐字稿已儲存：\n{output_path}")
                     else:
                         self.progress_label.config(text="發生錯誤，請查看上方記錄")
         except queue.Empty:

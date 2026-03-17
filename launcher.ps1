@@ -150,6 +150,9 @@ if (-not (Test-Path "venv")) {
     Write-Host "    + python-dotenv" -ForegroundColor Yellow
     Write-Host "      用來儲存你的 API Key，下次不用重新輸入" -ForegroundColor Gray
     Write-Host ""
+    Write-Host "    + yt-dlp" -ForegroundColor Yellow
+    Write-Host "      用來下載 YouTube 音訊" -ForegroundColor Gray
+    Write-Host ""
     Write-Host "  ============================================" -ForegroundColor Cyan
     Write-Host ""
 
@@ -171,7 +174,16 @@ if (-not (Test-Path "venv")) {
         pause; exit 1
     }
 } else {
-    Write-Host "[OK] 虛擬環境已就緒。" -ForegroundColor Green
+    Write-Host "[OK] 虛擬環境已就緒，檢查套件更新..." -ForegroundColor Green
+    # 清理損壞的 dist-info（METADATA 檔遺失的條目）
+    $broken = Get-ChildItem "venv\Lib\site-packages" -Directory -Filter "*dist-info" -ErrorAction SilentlyContinue | Where-Object {
+        -not (Test-Path (Join-Path $_.FullName "METADATA"))
+    }
+    foreach ($dir in $broken) {
+        Write-Host "[INFO] 清理損壞的套件資訊：$($dir.Name)" -ForegroundColor Yellow
+        Remove-Item -Recurse -Force $dir.FullName
+    }
+    uv pip install -r requirements.txt --python venv\Scripts\python.exe -q
 }
 
 # 啟動虛擬環境
