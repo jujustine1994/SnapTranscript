@@ -204,6 +204,7 @@ class SnapTranscriptApp:
         self.yt_url_var = tk.StringVar()
         self.yt_save_path_var = tk.StringVar()
         self.yt_action = tk.StringVar(value="transcribe")
+        self._last_output_path = ""
 
         self._build_ui()
         self._load_api_key()
@@ -278,8 +279,9 @@ class SnapTranscriptApp:
         self.frame_youtube.grid_remove()  # 預設隱藏
 
         # 切割設定
-        frame_cut = ttk.LabelFrame(self.root, text=" 切割設定 ", padding=8)
-        frame_cut.grid(row=1, column=0, sticky="ew", **pad)
+        self.frame_cut = ttk.LabelFrame(self.root, text=" 切割設定 ", padding=8)
+        self.frame_cut.grid(row=1, column=0, sticky="ew", **pad)
+        frame_cut = self.frame_cut
 
         self.cut_mode = tk.StringVar(value="auto")
         ttk.Radiobutton(
@@ -302,17 +304,25 @@ class SnapTranscriptApp:
         self.frame_custom.grid_remove()  # 預設隱藏
 
         # API Key
-        frame_api = ttk.LabelFrame(self.root, text=" Gemini API Key ", padding=8)
-        frame_api.grid(row=2, column=0, sticky="ew", **pad)
+        self.frame_api = ttk.LabelFrame(self.root, text=" Gemini API Key ", padding=8)
+        self.frame_api.grid(row=2, column=0, sticky="ew", **pad)
 
+        api_row = tk.Frame(self.frame_api)
+        api_row.pack(anchor="w")
         self.api_var = tk.StringVar()
-        self.api_entry = ttk.Entry(frame_api, textvariable=self.api_var, width=50, show="•")
+        self.api_entry = ttk.Entry(api_row, textvariable=self.api_var, width=40, show="•")
         self.api_entry.pack(side="left", padx=(0, 8))
-        ttk.Button(frame_api, text="顯示", width=5, command=self._toggle_api_show).pack(
+        ttk.Button(api_row, text="顯示", width=5, command=self._toggle_api_show).pack(
             side="left", padx=(0, 8)
         )
         self.save_key_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(frame_api, text="記住", variable=self.save_key_var).pack(side="left")
+        ttk.Checkbutton(api_row, text="記住", variable=self.save_key_var).pack(side="left")
+
+        tk.Label(
+            self.frame_api,
+            text="🔒 API Key 僅儲存於本機 .env 檔，請勿將 Key 提供給他人。",
+            foreground="gray", font=("", 8),
+        ).pack(anchor="w", pady=(4, 0))
 
         # 開始按鈕列（如何取得？ 左邊，開始轉錄 置中）
         frame_start = tk.Frame(self.root)
@@ -340,16 +350,27 @@ class SnapTranscriptApp:
 
         self.progress_label = ttk.Label(frame_progress, text="等待開始...")
         self.progress_label.pack(anchor="w")
-        self.progress_bar = ttk.Progressbar(frame_progress, length=490, mode="determinate")
+        self.progress_bar = ttk.Progressbar(frame_progress, mode="determinate")
         self.progress_bar.pack(fill="x", pady=(4, 8))
         self.log_text = scrolledtext.ScrolledText(
-            frame_progress, width=66, height=8, state="disabled", font=("Consolas", 9)
+            frame_progress, width=56, height=8, state="disabled", font=("Consolas", 9)
         )
         self.log_text.pack(fill="x")
 
-        # 輸出路徑
-        self.output_label = ttk.Label(self.root, text="", foreground="gray")
-        self.output_label.grid(row=5, column=0, pady=(0, 12))
+        # 輸出路徑 + 開啟資料夾
+        frame_output = tk.Frame(self.root)
+        frame_output.grid(row=5, column=0, pady=(0, 12))
+        self.output_label = ttk.Label(frame_output, text="", foreground="gray")
+        self.output_label.pack(side="left", padx=(0, 8))
+        self.btn_open_folder = ttk.Button(
+            frame_output, text="開啟資料夾", command=self._open_output_folder
+        )
+        # 預設隱藏，完成後才顯示
+
+        # 初始引導文字
+        self.log_text.config(state="normal")
+        self.log_text.insert("1.0", "請選擇音訊來源，設定完成後按「開始」。\n")
+        self.log_text.config(state="disabled")
 
         self.root.columnconfigure(0, weight=1)
 
@@ -414,11 +435,32 @@ class SnapTranscriptApp:
         self._update_btn_label()
         self.root.update_idletasks()
 
+    def _set_widgets_state(self, widget, state):
+        """遞迴設定 widget 及其所有子元件的 state"""
+        try:
+            widget.config(state=state)
+        except tk.TclError:
+            pass
+        for child in widget.winfo_children():
+            self._set_widgets_state(child, state)
+
     def _update_btn_label(self):
-        if self.source_mode.get() == "youtube" and self.yt_action.get() == "download_only":
+        is_download_only = (
+            self.source_mode.get() == "youtube" and self.yt_action.get() == "download_only"
+        )
+        if is_download_only:
             self.btn_start.config(text="▶  開始下載")
+            self._set_widgets_state(self.frame_cut, "disabled")
+            self._set_widgets_state(self.frame_api, "disabled")
         else:
             self.btn_start.config(text="▶  開始轉錄")
+            self._set_widgets_state(self.frame_cut, "normal")
+            self._set_widgets_state(self.frame_api, "normal")
+
+    def _open_output_folder(self):
+        folder = os.path.dirname(self._last_output_path)
+        if folder and os.path.exists(folder):
+            os.startfile(folder)
 
     def _select_save_path(self):
         path = filedialog.asksaveasfilename(
@@ -495,6 +537,7 @@ class SnapTranscriptApp:
         self.log_text.delete("1.0", "end")
         self.log_text.config(state="disabled")
         self.output_label.config(text="")
+        self.btn_open_folder.pack_forget()
         self.progress_bar["value"] = 0
         self.progress_label.config(text="準備中...")
         self.is_running = True
@@ -641,6 +684,8 @@ class SnapTranscriptApp:
                     self.is_running = False
                     self.btn_start.config(state="normal")
                     if success:
+                        self._last_output_path = output_path
+                        self.btn_open_folder.pack(side="left")
                         if download_only:
                             self.output_label.config(
                                 text=f"已下載：{output_path}", foreground="green"
