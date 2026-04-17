@@ -2,7 +2,7 @@
 
 ## 工具總覽
 
-會議音訊逐字稿工具。選取音訊檔 → 分段切割 → Gemini 轉錄 → 合併輸出 TXT。
+會議音訊逐字稿工具。支援本地音訊上傳或 YouTube 音訊下載，分段切割後透過 Gemini 轉錄，合併輸出 TXT。
 
 ## 檔案清單
 
@@ -10,8 +10,8 @@
 |------|------|
 | `Run SnapTranscript.bat` | 薄殼啟動器：只呼叫 launcher.ps1 |
 | `launcher.ps1` | 環境檢查、首次安裝說明、建立 venv、啟動主程式 |
-| `main.py` | 主程式：GUI + 切割邏輯 + Gemini API 呼叫 |
-| `requirements.txt` | Python 套件清單 |
+| `main.py` | 主程式：GUI + YouTube 下載 + 切割邏輯 + Gemini API 呼叫 |
+| `requirements.txt` | Python 套件清單（google-genai、python-dotenv、yt-dlp） |
 | `.env` | API Key 儲存（不進版控） |
 | `.gitignore` | 排除 venv、.env、暫存檔 |
 
@@ -20,12 +20,17 @@
 ```
 Run SnapTranscript.bat
   └─ launcher.ps1
-        └─ 環境檢查（Python / uv / venv）
+        └─ 環境檢查（Python / uv / ffmpeg / venv）
         └─ tkinter 視窗啟動
-              ├─ 使用者選音訊檔
+              ├─ 選音訊來源
+              │     ├─ 【本地上傳】選取音訊檔
+              │     └─ 【YouTube 下載】輸入網址 + 另存新檔對話框
+              │           ├─ 下載後馬上轉錄
+              │           └─ 只下載音訊（不需 API Key）→ 下載完結束
               ├─ 選切割模式（自動 30 分 / 自訂 HH:MM:SS）
               ├─ 輸入 / 確認 API Key
-              └─ 按「開始轉錄」→ 背景執行緒
+              └─ 按「開始」→ 背景執行緒
+                    ├─ [YouTube 模式] yt-dlp 下載音訊（原始最佳音質轉 mp3）
                     ├─ ffprobe 取得音訊總時長
                     ├─ 建立分段清單 [(start, end), ...]
                     └─ 逐段處理：
@@ -46,6 +51,8 @@ Run SnapTranscript.bat
 
 ## 輸出格式
 
+### 逐字稿（本地上傳 / YouTube 下載後轉錄）
+
 ```
 === 第 1 段（00:00:00 - 00:30:00）===
 
@@ -56,11 +63,25 @@ Run SnapTranscript.bat
 [逐字稿內容...]
 ```
 
-輸出檔案路徑：與音訊檔同目錄，檔名加上 `_transcript.txt` 後綴。
+輸出路徑：
+- **本地上傳**：與音訊檔同目錄，檔名加上 `_transcript.txt` 後綴
+- **YouTube 下載後轉錄**：與下載音訊同目錄，檔名加上 `_transcript.txt` 後綴
+- **YouTube 只下載**：只輸出 mp3，無逐字稿
+
+## YouTube 下載設計
+
+- 使用 `yt-dlp`，格式選擇 `bestaudio/best`，postprocessor 轉 mp3
+- 存檔路徑由「另存新檔」對話框決定，使用者可自訂位置與檔名
+- 下載進度透過 progress hook 回傳至 UI（%、MB、速度）
+- Token 計算以音訊時長為準，與 mp3 bitrate 無關（32 tokens/秒）
 
 ## 切割設計決策：為何切 30 分鐘
 
-### 模型規格（Gemini 2.5 Flash Preview）
+### 模型規格（`gemini-flash-latest`）
+
+本專案一律使用 `gemini-flash-latest`：指向 Gemini Flash 系列最新版本的別名，自動熱切換（可能是穩定版、預覽版或實驗版），無需手動更新模型 ID。
+
+下表以目前別名指向版本的規格為參考基準，實際限制以 Google 官方文件為準：
 
 | 限制 | 數值 |
 |------|------|

@@ -172,6 +172,9 @@ def transcribe_segment(audio_path: str, client: genai.Client) -> str:
         time.sleep(2)
         audio_file = client.files.get(name=audio_file.name)
 
+    if audio_file.state.name != "ACTIVE":
+        raise Exception(f"Gemini 檔案處理失敗（狀態：{audio_file.state.name}），請重試")
+
     prompt = """請仔細聆聽這段音訊，將所有說話內容以原始語言逐字轉錄。
 
 輸出規則：
@@ -182,10 +185,14 @@ def transcribe_segment(audio_path: str, client: genai.Client) -> str:
 5. 背景雜音、靜默段、非語言音（笑聲、清喉嚨等）不需輸出
 6. 盡力辨識模糊語音，結合前後文補全語意，忠實呈現內容，不要摘要或省略"""
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=[prompt, audio_file],
-    )
+    try:
+        response = client.models.generate_content(
+            model=MODEL_NAME,
+            contents=[prompt, audio_file],
+        )
+    except Exception as e:
+        client.files.delete(name=audio_file.name)
+        raise
     client.files.delete(name=audio_file.name)
     return response.text.strip()
 
@@ -616,7 +623,18 @@ class SnapTranscriptApp:
                     raise Exception(f"第 {i + 1} 段切割失敗，請確認 ffmpeg 是否正常運作")
 
                 self._log(f"[{i + 1}/{len(segments)}] 上傳至 Gemini，等待轉錄...")
-                transcript = transcribe_segment(temp_path, client)
+                while True:
+                    try:
+                        transcript = transcribe_segment(temp_path, client)
+                        break
+                    except Exception as e:
+                        if "503" in str(e) or "UNAVAILABLE" in str(e):
+                            self._log(f"[ERROR] 503 UNAVAILABLE - Gemini 伺服器暫時不可用")
+                            if not self._ask_user("Gemini 伺服器回傳 503，是否重試？"):
+                                raise Exception("已取消重試") from e
+                            self._log(f"[{i + 1}/{len(segments)}] 重試中...")
+                        else:
+                            raise
                 transcripts.append((i + 1, start_hms, end_hms, transcript))
                 self._log(f"[{i + 1}/{len(segments)}] 完成")
                 self._set_progress(i + 1, len(segments), f"{i + 1} / {len(segments)} 段完成")
@@ -655,6 +673,14 @@ class SnapTranscriptApp:
                     os.remove(f)
 
     # ---- 執行緒安全 UI 更新 ----
+    def _ask_user(self, question: str) -> bool:
+        """從背景執行緒呼叫，阻塞直到用戶在主執行緒回答 Yes/No"""
+        reply_event = threading.Event()
+        reply_holder = [False]
+        self.msg_queue.put(("ask", (question, reply_event, reply_holder)))
+        reply_event.wait()
+        return reply_holder[0]
+
     def _log(self, msg: str):
         self.msg_queue.put(("log", msg))
 
@@ -679,6 +705,10 @@ class SnapTranscriptApp:
                     self.progress_bar["maximum"] = total
                     self.progress_bar["value"] = current
                     self.progress_label.config(text=label)
+                elif msg_type == "ask":
+                    question, reply_event, reply_holder = data
+                    reply_holder[0] = messagebox.askyesno("503 伺服器錯誤", question)
+                    reply_event.set()
                 elif msg_type == "done":
                     output_path, success, download_only = data
                     self.is_running = False
