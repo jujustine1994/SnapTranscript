@@ -194,6 +194,11 @@ def transcribe_segment(audio_path: str, client: genai.Client) -> str:
         client.files.delete(name=audio_file.name)
         raise
     client.files.delete(name=audio_file.name)
+    if response.text is None:
+        finish_reason = None
+        if response.candidates:
+            finish_reason = response.candidates[0].finish_reason
+        raise Exception(f"Gemini 回傳空白結果（finish_reason: {finish_reason}），可能因內容審查攔截或無法辨識音訊，請重試")
     return response.text.strip()
 
 
@@ -628,9 +633,15 @@ class SnapTranscriptApp:
                         transcript = transcribe_segment(temp_path, client)
                         break
                     except Exception as e:
-                        if "503" in str(e) or "UNAVAILABLE" in str(e):
+                        err_str = str(e)
+                        if "503" in err_str or "UNAVAILABLE" in err_str:
                             self._log(f"[ERROR] 503 UNAVAILABLE - Gemini 伺服器暫時不可用")
                             if not self._ask_user("Gemini 伺服器回傳 503，是否重試？"):
+                                raise Exception("已取消重試") from e
+                            self._log(f"[{i + 1}/{len(segments)}] 重試中...")
+                        elif "Gemini 回傳空白結果" in err_str:
+                            self._log(f"[ERROR] {e}")
+                            if not self._ask_user("Gemini 回傳空白結果，是否重試？"):
                                 raise Exception("已取消重試") from e
                             self._log(f"[{i + 1}/{len(segments)}] 重試中...")
                         else:

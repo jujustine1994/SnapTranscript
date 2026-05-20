@@ -23,6 +23,10 @@
 
 ## 更新記錄
 
+### 2026-05-20（三）
+- 修正：Gemini 回傳 `response.text = None` 時，程式崩潰（`'NoneType' object has no attribute 'strip'`）→ 改為拋出明確錯誤訊息，包含 `finish_reason`
+- 新增：`response.text = None` 錯誤同樣觸發互動式 retry dialog（與 503 行為一致）
+
 ### 2026-04-17（五）
 - 修改：Gemini API 503 改為互動式 retry — log 顯示 `[ERROR] 503 UNAVAILABLE`，跳出 dialog 詢問是否重試，可無限重試直到成功或使用者取消
 
