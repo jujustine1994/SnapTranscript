@@ -26,6 +26,7 @@
 ### 2026-06-10（三）
 - 修正：`winget install Python` 加入 `PrependPath=1 Include_pip=1`，確保 Python 安裝後自動加進 PATH（原本 `--silent` 模式預設不加）
 - 修正：Python 安裝完但 PATH 尚未生效時，誤顯示 `[OK]` 訊息 → 改為 `[INFO]` 並說明需重開視窗
+- 修正：`launcher.ps1` 加入全域 `trap`，攔截未處理例外，防止執行失敗時視窗直接閃退
 
 ### 2026-05-20（三）
 - 修正：Gemini 回傳 `response.text = None` 時，程式崩潰（`'NoneType' object has no attribute 'strip'`）→ 改為拋出明確錯誤訊息，包含 `finish_reason`
