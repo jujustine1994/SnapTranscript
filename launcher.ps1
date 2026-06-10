@@ -33,7 +33,7 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     if ($ans -eq "" -or $ans -ieq "Y") {
         if (Get-Command winget -ErrorAction SilentlyContinue) {
             Write-Host "[INFO] 透過 winget 安裝 Python，請稍候..." -ForegroundColor Gray
-            winget install --id Python.Python.3 -e --silent --accept-source-agreements --accept-package-agreements
+            winget install --id Python.Python.3 -e --silent --accept-source-agreements --accept-package-agreements --override "/quiet PrependPath=1 Include_pip=1"
         } else {
             Write-Host "[ERROR] 找不到 winget，請手動至 https://www.python.org/ 下載安裝後重新執行。" -ForegroundColor Red
             pause; exit 1
@@ -41,10 +41,8 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
         $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("PATH", "User")
         if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
             Write-Host ""
-            Write-Host "[OK] Python 安裝完成。" -ForegroundColor Green
-            Write-Host ""
-            Write-Host "  Windows 在安裝新程式後，需要重新開啟視窗才能認到剛裝好的程式。" -ForegroundColor Gray
-            Write-Host "  這是 Windows 的正常行為，不是出錯了。" -ForegroundColor Gray
+            Write-Host "[INFO] Python 已安裝，需要重新開啟視窗才能讓系統認到它。" -ForegroundColor Yellow
+            Write-Host "       這是 Windows 的正常行為，不是出錯了。" -ForegroundColor Gray
             Write-Host ""
             Write-Host "[INFO] 請關閉此視窗，再重新點兩下啟動檔，安裝流程會從下一步繼續。" -ForegroundColor Yellow
             pause; exit 0
