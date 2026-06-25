@@ -597,6 +597,17 @@ class SnapTranscriptApp:
                 messagebox.showerror("格式錯誤", str(e))
                 return
 
+        # 解析擷取範圍（只下載模式不需要）
+        range_bounds = None
+        if not download_only and self.range_enabled.get():
+            try:
+                range_bounds = parse_range(
+                    self.range_start_var.get(), self.range_end_var.get()
+                )
+            except ValueError as e:
+                messagebox.showerror("格式錯誤", str(e))
+                return
+
         # 儲存 API Key（只下載模式不需要）
         if not download_only:
             if not api_key:
@@ -619,11 +630,17 @@ class SnapTranscriptApp:
         self.btn_start.config(state="disabled")
 
         t = threading.Thread(
-            target=self._worker, args=(source_info, cut_points, client), daemon=True
+            target=self._worker, args=(source_info, cut_points, client, range_bounds), daemon=True
         )
         t.start()
 
-    def _worker(self, source_info: dict, cut_points: list[int] | None, client: genai.Client):
+    def _worker(
+        self,
+        source_info: dict,
+        cut_points: list[int] | None,
+        client: genai.Client,
+        range_bounds: tuple[int, int] | None,
+    ):
         """背景執行緒：（下載）+ 切割 + 上傳 + 轉錄 + 合併"""
         temp_files: list[str] = []
         try:
@@ -660,7 +677,17 @@ class SnapTranscriptApp:
             self._log(f"總時長：{seconds_to_hms(total_duration)}")
 
             # 建立分段清單
-            range_start, range_end = 0, int(total_duration)
+            if range_bounds is not None:
+                range_start, range_end = range_bounds
+                if range_start >= int(total_duration):
+                    raise Exception("擷取範圍超出音訊總長度，請重新設定")
+                range_end = min(range_end, int(total_duration))
+                self._log(
+                    f"擷取範圍：{seconds_to_hms(range_start)} → {seconds_to_hms(range_end)}"
+                )
+            else:
+                range_start, range_end = 0, int(total_duration)
+
             if cut_points is None:
                 # 自動模式：每 30 分鐘一刀
                 auto_points = list(
