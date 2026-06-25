@@ -238,6 +238,9 @@ class SnapTranscriptApp:
         self.yt_save_path_var = tk.StringVar()
         self.yt_action = tk.StringVar(value="transcribe")
         self._last_output_path = ""
+        self.range_enabled = tk.BooleanVar(value=False)
+        self.range_start_var = tk.StringVar()
+        self.range_end_var = tk.StringVar()
 
         self._build_ui()
         self._load_api_key()
@@ -311,9 +314,39 @@ class SnapTranscriptApp:
         ).pack(side="left")
         self.frame_youtube.grid_remove()  # 預設隱藏
 
+        # 擷取範圍
+        self.frame_range = ttk.LabelFrame(self.root, text=" 擷取範圍 ", padding=8)
+        self.frame_range.grid(row=1, column=0, sticky="ew", **pad)
+
+        ttk.Checkbutton(
+            self.frame_range, text="只處理音訊的一部分",
+            variable=self.range_enabled, command=self._toggle_range_mode,
+        ).grid(row=0, column=0, sticky="w")
+
+        self.frame_range_inputs = ttk.Frame(self.frame_range)
+        self.frame_range_inputs.grid(row=1, column=0, sticky="w", padx=(20, 0), pady=(6, 0))
+        ttk.Label(self.frame_range_inputs, text="起始時間：").grid(row=0, column=0, sticky="w")
+        ttk.Entry(self.frame_range_inputs, textvariable=self.range_start_var, width=10).grid(
+            row=0, column=1, padx=(0, 16)
+        )
+        ttk.Label(self.frame_range_inputs, text="結束時間：").grid(row=0, column=2, sticky="w")
+        ttk.Entry(self.frame_range_inputs, textvariable=self.range_end_var, width=10).grid(
+            row=0, column=3
+        )
+        ttk.Label(self.frame_range_inputs, text="（HH:MM:SS，例如 00:10:00）").grid(
+            row=1, column=0, columnspan=4, sticky="w", pady=(2, 0)
+        )
+        self.frame_range_inputs.grid_remove()  # 預設隱藏
+
+        tk.Label(
+            self.frame_range,
+            text="⚠️ 下方切割點為原始音訊的絕對時間，需落在此範圍內才會生效",
+            foreground="gray", font=("", 8),
+        ).grid(row=2, column=0, sticky="w", pady=(6, 0))
+
         # 切割設定
         self.frame_cut = ttk.LabelFrame(self.root, text=" 切割設定 ", padding=8)
-        self.frame_cut.grid(row=1, column=0, sticky="ew", **pad)
+        self.frame_cut.grid(row=2, column=0, sticky="ew", **pad)
         frame_cut = self.frame_cut
 
         self.cut_mode = tk.StringVar(value="auto")
@@ -338,7 +371,7 @@ class SnapTranscriptApp:
 
         # API Key
         self.frame_api = ttk.LabelFrame(self.root, text=" Gemini API Key ", padding=8)
-        self.frame_api.grid(row=2, column=0, sticky="ew", **pad)
+        self.frame_api.grid(row=3, column=0, sticky="ew", **pad)
 
         api_row = tk.Frame(self.frame_api)
         api_row.pack(anchor="w")
@@ -359,7 +392,7 @@ class SnapTranscriptApp:
 
         # 開始按鈕列（如何取得？ 左邊，開始轉錄 置中）
         frame_start = tk.Frame(self.root)
-        frame_start.grid(row=3, column=0, sticky="ew", padx=14, pady=10)
+        frame_start.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
         frame_start.columnconfigure(0, weight=1)
         frame_start.columnconfigure(1, weight=1)
         frame_start.columnconfigure(2, weight=1)
@@ -379,7 +412,7 @@ class SnapTranscriptApp:
 
         # 進度區
         frame_progress = ttk.LabelFrame(self.root, text=" 處理進度 ", padding=8)
-        frame_progress.grid(row=4, column=0, sticky="ew", padx=14, pady=(6, 14))
+        frame_progress.grid(row=5, column=0, sticky="ew", padx=14, pady=(6, 14))
 
         self.progress_label = ttk.Label(frame_progress, text="等待開始...")
         self.progress_label.pack(anchor="w")
@@ -392,7 +425,7 @@ class SnapTranscriptApp:
 
         # 輸出路徑 + 開啟資料夾
         frame_output = tk.Frame(self.root)
-        frame_output.grid(row=5, column=0, pady=(0, 12))
+        frame_output.grid(row=6, column=0, pady=(0, 12))
         self.output_label = ttk.Label(frame_output, text="", foreground="gray")
         self.output_label.pack(side="left", padx=(0, 8))
         self.btn_open_folder = ttk.Button(
@@ -455,6 +488,13 @@ class SnapTranscriptApp:
             self.frame_custom.grid_remove()
         self.root.update_idletasks()
 
+    def _toggle_range_mode(self):
+        if self.range_enabled.get():
+            self.frame_range_inputs.grid()
+        else:
+            self.frame_range_inputs.grid_remove()
+        self.root.update_idletasks()
+
     def _toggle_api_show(self):
         self.api_entry.config(show="" if self.api_entry.cget("show") else "•")
 
@@ -483,10 +523,12 @@ class SnapTranscriptApp:
         )
         if is_download_only:
             self.btn_start.config(text="▶  開始下載")
+            self._set_widgets_state(self.frame_range, "disabled")
             self._set_widgets_state(self.frame_cut, "disabled")
             self._set_widgets_state(self.frame_api, "disabled")
         else:
             self.btn_start.config(text="▶  開始轉錄")
+            self._set_widgets_state(self.frame_range, "normal")
             self._set_widgets_state(self.frame_cut, "normal")
             self._set_widgets_state(self.frame_api, "normal")
 
