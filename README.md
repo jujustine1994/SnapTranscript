@@ -31,6 +31,10 @@
 2. 等待虛擬環境建立完成
 3. 在視窗中輸入 Gemini API Key（勾選「記住」可自動儲存至 `.env`）
 
+## 只轉錄音訊的一部分
+
+勾選「擷取範圍」下的「只處理音訊的一部分」，輸入起始/結束時間（HH:MM:SS），即可只轉錄該段範圍，範圍外完全不切割、不上傳。不勾選則維持整段轉錄。
+
 ## 取得 Gemini API Key（免費）
 
 1. 前往 [Google AI Studio](https://aistudio.google.com/apikey)（需登入 Google 帳號）
