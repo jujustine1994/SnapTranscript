@@ -6,8 +6,31 @@ $host.UI.RawUI.WindowTitle = "SnapTranscript"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ScriptDir
 
+# ======================================
+# 執行紀錄（必加，須放在 trap 之前，閃退才記得到）
+# 完整規則見 windows-tool.md「執行紀錄」；與主程式寫同一個 logs\app.log
+# ======================================
+$LogFile = Join-Path $ScriptDir "logs\app.log"
+New-Item -ItemType Directory -Force (Split-Path $LogFile) | Out-Null
+$Utf8NoBom = [System.Text.UTF8Encoding]::new($false)   # 不可用 Add-Content -Encoding UTF8，會寫 BOM（地雷十一）
+
+function Write-Log {
+    param([string]$Msg, [string]$Level = "INFO")
+    $line = "[{0}] [{1,-5}] {2}`r`n" -f (Get-Date -Format "HH:mm:ss"), $Level, $Msg
+    try { [System.IO.File]::AppendAllText($LogFile, $line, $Utf8NoBom) } catch {}   # 不持有 handle（地雷十）
+}
+
+function Write-LogHeader {
+    param([string]$Msg)
+    $line = "=== {0} {1} ===`r`n" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Msg
+    try { [System.IO.File]::AppendAllText($LogFile, $line, $Utf8NoBom) } catch {}
+}
+
+Write-LogHeader "啟動"
+
 # 攔截所有未預期例外，防止視窗直接閃退
 trap {
+    Write-Log "[CRASH] $($_.Exception.Message) @ 第 $($_.InvocationInfo.ScriptLineNumber) 行" "FATAL"
     Write-Host ""
     Write-Host "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" -ForegroundColor Red
     Write-Host "[CRASH] 意外錯誤，程式無法繼續執行" -ForegroundColor Red
@@ -202,6 +225,8 @@ if (-not (Test-Path "venv")) {
 # 啟動虛擬環境
 . ".\venv\Scripts\Activate.ps1"
 
+Write-Log "環境就緒 | $pyVer | $uvVer"
+
 Write-Host ""
 Write-Host "[START] 啟動中，請保持此視窗開啟..." -ForegroundColor Green
 Write-Host ""
@@ -215,6 +240,7 @@ $exitCode = $LASTEXITCODE
 if (Test-Path "__pycache__") { Remove-Item -Recurse -Force "__pycache__" }
 
 if ($exitCode -ne 0) {
+    Write-Log "主程式異常結束（exit code $exitCode）" "ERROR"
     Write-Host ""
     Write-Host "[ERROR] 程式意外停止，請回報上方錯誤訊息。" -ForegroundColor Red
     pause
