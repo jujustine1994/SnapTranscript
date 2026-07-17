@@ -28,18 +28,45 @@ Run SnapTranscript.bat
               │           ├─ 下載後馬上轉錄
               │           └─ 只下載音訊（不需 API Key）→ 下載完結束
               ├─ 選切割模式（自動 30 分 / 自訂 HH:MM:SS）
+              ├─ 擷取範圍（可選）：只處理音訊的一部分（起始/結束 HH:MM:SS）
               ├─ 輸入 / 確認 API Key
+              ├─ 自動重試（可選）：勾選後 503 / 空白結果自動重試，不再跳詢問 dialog
               └─ 按「開始」→ 背景執行緒
                     ├─ [YouTube 模式] yt-dlp 下載音訊（原始最佳音質轉 mp3）
                     ├─ ffprobe 取得音訊總時長
-                    ├─ 建立分段清單 [(start, end), ...]
+                    ├─ 建立分段清單 [(start, end), ...]（限制在擷取範圍內）
                     └─ 逐段處理：
                           ├─ ffmpeg 切割暫存檔
                           ├─ genai.upload_file 上傳
                           ├─ gemini-flash-latest 轉錄
+                          │     └─ 失敗（503 / 空白結果）→ 依「自動重試」設定：
+                          │           勾選＝自動重試至多 MAX_AUTO_RETRIES 次
+                          │           未勾選＝跳 dialog 詢問使用者
                           └─ 刪除暫存檔
                     └─ 合併所有段落 → 輸出 _transcript.txt
 ```
+
+## Log / 錯誤紀錄
+
+單一累積檔 `logs/app.log`（`_find_project_root()` 往上找 `launcher.ps1` 所在目錄定位專案根目錄，主程式在根目錄或 `src/` 都對），不分次建立新檔，執行期間持續累加、不自動清除。`LOG_DIR`/`LOG_FILE` 為模組層級常數，`_write_log(msg, level="INFO")` 每次開檔→寫→關檔、不持有 handle。
+
+落檔只有三種情況，由呼叫端顯式傳 `to_file=True` 觸發（`_log()` 預設 `to_file=False`，是刻意的 fail-closed 設計：漏帶旗標的後果是少記一行，不是把不該落檔的東西寫上磁碟）：
+1. **任務起始**（`_init_log_file` → `_write_log_header`）：唯一有完整日期的行，格式 `=== YYYY-MM-DD HH:MM:SS <task_desc> ===`
+2. **錯誤行**（`_write_log(msg, "ERROR")`）：例如轉錄中止時記 `type(e).__name__` 與 HTTP 狀態，不寫完整例外堆疊
+3. **任務結果**（`_finalize_log_file` → `_write_log`）：成功/失敗 + 耗時，level 為 `OK`/`FAIL`
+
+一般行格式：`[HH:MM:SS] [LEVEL] msg`（level 靠左對齊 5 字元寬）。其餘進度／中間步驟（讀取音訊、上傳、分段完成等）一律不落檔，只推 UI queue 顯示。
+
+範例：
+```
+=== 2026-07-16 14:18:14 逐字稿 6640.m4a | 共 3 段 ===
+[14:18:15] [ERROR ] 轉錄中止 -> ClientError | HTTP 429 配額用盡
+[14:18:15] [FAIL  ] 失敗，耗時 0分1秒
+```
+
+刻意**不記錄**：逐字稿全文（內容可能機密、對除錯無幫助）、API 完整 request/response payload（太細，判斷不出根因）、音訊檔案大小等原始資料（目前沒有觀察到相關規律）。
+
+> **AI 注意（除錯用，平常不用管）：** 使用者回報「轉錄失敗」「常常出錯」等問題時，先去 `logs/app.log` 翻閱**檔尾附近**的內容（累積檔，最新記錄在最後），比只看使用者截圖更完整。平常維護、開發新功能時不需要主動查閱或提及這個目錄。
 
 ## 關鍵設定變數（main.py）
 
@@ -48,6 +75,7 @@ Run SnapTranscript.bat
 | `DEFAULT_CHUNK_SECONDS` | 1800（30分） | 自動切割間隔 |
 | `MODEL_NAME` | `gemini-flash-latest` | Gemini 模型 |
 | `ENV_PATH` | `<專案根目錄>/.env` | API Key 儲存位置 |
+| `MAX_AUTO_RETRIES` | 5 | 勾選「自動重試」時，單段最多自動重試次數 |
 
 ## 輸出格式
 
