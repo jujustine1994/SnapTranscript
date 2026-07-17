@@ -812,6 +812,7 @@ class SnapTranscriptApp:
                             f"第{i + 1}段 上傳Gemini -> {type(e).__name__} | "
                             f"{status} | 重試 {retry_count}/{MAX_AUTO_RETRIES}",
                             "ERROR",
+                            to_file=True,
                         )
                         # UI 給使用者看的可讀說明（不落檔）
                         self._log(f"[錯誤] {reason}", to_file=False)
@@ -899,11 +900,13 @@ class SnapTranscriptApp:
         reply_event.wait()
         return reply_holder[0]
 
-    def _log(self, msg: str, level: str = "INFO", to_file: bool = True):
+    def _log(self, msg: str, level: str = "INFO", to_file: bool = False):
         """一個呼叫同時（可選）落檔 + 推 UI queue。
 
-        落檔的只有三種：任務起始（_write_log_header）、錯誤行、任務結果。
-        畫面上的進度／成功中間步驟一律 to_file=False，只推 UI 不落檔。
+        落檔的只有三種：任務起始（_write_log_header）、錯誤行、任務結果，
+        這三種要顯式傳 to_file=True；其餘進度／中間步驟一律不傳，只推 UI。
+        預設 False 是故意的：漏帶旗標的後果是少記一行，不是把不該落檔的
+        東西寫上磁碟。
         """
         if to_file:
             _write_log(msg, level)
