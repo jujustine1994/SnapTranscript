@@ -52,7 +52,8 @@ Run SnapTranscript.bat
                           │                 至多 MAX_AUTO_RETRIES 次
                           │           未勾選＝跳 dialog 詢問使用者
                           │     └─ 重試耗盡 / 使用者放棄 → 標記該段失敗，繼續下一段
-                          │     └─ 429 配額用盡 → 中止，但已完成段落先寫檔
+                          │     └─ 429 配額用盡 → 中止（不再重試，繼續打只會一直撞牆）
+                          │     └─ 任何原因中止 → 都會先把已完成段落寫檔，不讓成果消失
                           └─ 刪除暫存檔
                     └─ 合併所有段落 → 輸出 _transcript.txt
                           （失敗段落寫佔位符，不因此少一段）
@@ -62,12 +63,12 @@ Run SnapTranscript.bat
 
 ## Log / 錯誤紀錄
 
-單一累積檔 `logs/app.log`（`_find_project_root()` 往上找 `launcher.ps1` 所在目錄定位專案根目錄，主程式在根目錄或 `src/` 都對），不分次建立新檔，執行期間持續累加、不自動清除。`LOG_DIR`/`LOG_FILE` 為模組層級常數，`_write_log(msg, level="INFO")` 每次開檔→寫→關檔、不持有 handle。
+單一累積檔 `logs/app.log`（`_find_project_root()` 往上找 `launcher.ps1` 所在目錄定位專案根目錄，主程式在根目錄或 `src/` 都對），不分次建立新檔，執行期間持續累加、不自動清除。`LOG_DIR`/`LOG_FILE` 為模組層級常數，`write_log(msg, level="INFO")` 每次開檔→寫→關檔、不持有 handle。
 
 落檔只有三種情況，由呼叫端顯式傳 `to_file=True` 觸發（`_log()` 預設 `to_file=False`，是刻意的 fail-closed 設計：漏帶旗標的後果是少記一行，不是把不該落檔的東西寫上磁碟）：
-1. **任務起始**（`_init_log_file` → `_write_log_header`）：唯一有完整日期的行，格式 `=== YYYY-MM-DD HH:MM:SS <task_desc> ===`
-2. **錯誤行**（`_write_log(msg, "ERROR")`）：例如轉錄中止時記 `type(e).__name__` 與 HTTP 狀態，不寫完整例外堆疊
-3. **任務結果**（`_finalize_log_file` → `_write_log`）：成功/失敗 + 耗時，level 為 `OK`/`FAIL`
+1. **任務起始**（`_init_log_file` → `write_log_header`）：唯一有完整日期的行，格式 `=== YYYY-MM-DD HH:MM:SS <task_desc> ===`
+2. **錯誤行**（`write_log(msg, "ERROR")`）：例如轉錄中止時記 `type(e).__name__` 與 HTTP 狀態，不寫完整例外堆疊
+3. **任務結果**（`_finalize_log_file` → `write_log`）：成功/失敗 + 耗時，level 為 `OK`/`FAIL`
 
 一般行格式：`[HH:MM:SS] [LEVEL] msg`（level 靠左對齊 5 字元寬）。其餘進度／中間步驟（讀取音訊、上傳、分段完成等）一律不落檔，只推 UI queue 顯示。
 
