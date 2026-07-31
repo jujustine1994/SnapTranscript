@@ -55,7 +55,7 @@ class TranscriptionJob:
         self.cb = callbacks
         self._transcribe = transcribe_fn or transcriber.transcribe_segment
         self._cut = cut_fn or audio.cut_audio_segment
-        self._sleep = sleep_fn or time.sleep
+        self._sleep = sleep_fn or time.sleep  # Task 7 的重試退避才會用到，目前無呼叫點
 
         self.results = [
             SegmentResult(index=i + 1, start_sec=s, end_sec=e)
@@ -83,17 +83,12 @@ class TranscriptionJob:
         return self._process(list(self.results))
 
     def _process(self, targets: list[SegmentResult]) -> str:
-        try:
-            for r in targets:
-                self._process_one(r)
-                self.cb.progress(
-                    self.done_count, self.total,
-                    f"{self.done_count} / {self.total} 段完成",
-                )
-        except QuotaExhausted:
-            # 配額用盡要中止，但已完成的段落先寫檔，不能整份丟掉
-            self._write_output()
-            raise
+        for r in targets:
+            self._process_one(r)
+            self.cb.progress(
+                self.done_count, self.total,
+                f"{self.done_count} / {self.total} 段完成",
+            )
         return self._write_output()
 
     def _process_one(self, r: SegmentResult):
@@ -161,6 +156,7 @@ class TranscriptionJob:
 
     # ---- 輸出 ----
     def _write_output(self) -> str:
+        self.cb.log("\n合併逐字稿...")
         lines = []
         for r in self.results:
             if r.text is None:
