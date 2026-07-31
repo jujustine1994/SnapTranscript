@@ -17,55 +17,16 @@ import yt_dlp
 from google import genai
 from dotenv import load_dotenv, set_key
 
-# ---- 常數 ----
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(SCRIPT_DIR, ".env")
-DEFAULT_CHUNK_SECONDS = 30 * 60  # 預設 30 分鐘
-MODEL_NAME = "gemini-flash-latest"
-MAX_AUTO_RETRIES = 5  # 「自動重試」勾選時，單段最多自動重試次數
-
-
-# ---- 執行紀錄（單一 logs/app.log 累積，規範見 windows-tool.md「執行紀錄」）----
-def _find_project_root() -> str:
-    """往上找 launcher.ps1 所在目錄＝專案根目錄。
-
-    不可寫死 os.path.join(SCRIPT_DIR, "..", "logs")：主程式在根目錄的專案會算到
-    專案外層（Documents\\Code\\logs），污染其他專案。用這個函式，主程式在根目錄
-    或 src/ 都對，日後把 .py 搬進 src/ 也不會壞。
-    """
-    here = os.path.dirname(os.path.abspath(__file__))
-    d = here
-    while True:
-        if os.path.exists(os.path.join(d, "launcher.ps1")):
-            return d
-        parent = os.path.dirname(d)
-        if parent == d:      # 找到磁碟根目錄仍沒找到，退回自己所在目錄，至少不寫到專案外
-            return here
-        d = parent
-
-
-LOG_DIR = os.path.join(_find_project_root(), "logs")
-LOG_FILE = os.path.join(LOG_DIR, "app.log")
-
-
-def _write_log(msg: str, level: str = "INFO"):
-    """寫一行到 logs/app.log。每次開檔→寫→關檔，不持有 handle（地雷十）"""
-    try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"[{time.strftime('%H:%M:%S')}] [{level:<5}] {msg}\n")
-    except OSError:
-        pass   # log 掛掉不能拖垮主程式；也涵蓋兩個實例同時跑撞在一起
-
-
-def _write_log_header(msg: str):
-    """任務起始行，唯一有完整日期的行"""
-    try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
-            f.write(f"=== {time.strftime('%Y-%m-%d %H:%M:%S')} {msg} ===\n")
-    except OSError:
-        pass
+import config
+import logger
+from config import (
+    DEFAULT_CHUNK_SECONDS,
+    ENV_PATH,
+    MAX_AUTO_RETRIES,
+    MODEL_NAME,
+    SCRIPT_DIR,
+)
+from logger import write_log, write_log_header
 
 
 # ---- CTH Banner ----
@@ -867,10 +828,10 @@ class SnapTranscriptApp:
                     "\n[ERROR] API 免費用量已達上限，請等明天配額重置後再試",
                     to_file=False,
                 )
-                _write_log(f"轉錄中止 -> {type(e).__name__} | HTTP 429 配額用盡", "ERROR")
+                write_log(f"轉錄中止 -> {type(e).__name__} | HTTP 429 配額用盡", "ERROR")
             else:
                 self._log(f"\n[ERROR] {e}", to_file=False)
-                _write_log(f"轉錄中止 -> {type(e).__name__}", "ERROR")
+                write_log(f"轉錄中止 -> {type(e).__name__}", "ERROR")
             self._finalize_log_file(success=False)
             self._done("", success=False)
         finally:
@@ -881,12 +842,12 @@ class SnapTranscriptApp:
     # ---- 執行紀錄（累積寫入 logs/app.log，供除錯查閱） ----
     def _init_log_file(self, task_desc: str):
         """任務起始：寫單行 header 到 logs/app.log（唯一有完整日期的行）"""
-        _write_log_header(task_desc)
+        write_log_header(task_desc)
 
     def _finalize_log_file(self, success: bool):
         """任務結束：寫一行成功/失敗 + 耗時"""
         elapsed = int(time.time() - self.log_start_time)
-        _write_log(
+        write_log(
             f"{'成功' if success else '失敗'}，耗時 {elapsed // 60}分{elapsed % 60}秒",
             "OK" if success else "FAIL",
         )
@@ -903,13 +864,13 @@ class SnapTranscriptApp:
     def _log(self, msg: str, level: str = "INFO", to_file: bool = False):
         """一個呼叫同時（可選）落檔 + 推 UI queue。
 
-        落檔的只有三種：任務起始（_write_log_header）、錯誤行、任務結果，
+        落檔的只有三種：任務起始（write_log_header）、錯誤行、任務結果，
         這三種要顯式傳 to_file=True；其餘進度／中間步驟一律不傳，只推 UI。
         預設 False 是故意的：漏帶旗標的後果是少記一行，不是把不該落檔的
         東西寫上磁碟。
         """
         if to_file:
-            _write_log(msg, level)
+            write_log(msg, level)
         self.msg_queue.put(("log", msg))
 
     def _set_progress(self, current: int, total: int, label: str):
