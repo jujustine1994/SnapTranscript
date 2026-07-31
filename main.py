@@ -32,6 +32,7 @@ from segments import (
     seconds_to_hms,
 )
 from audio import cut_audio_segment, download_youtube_audio, get_audio_duration
+from transcriber import transcribe_segment
 
 
 # ---- CTH Banner ----
@@ -53,44 +54,6 @@ def show_cth_banner():
     print(f"{b} *          {y}created by CTH{b}            *{r}")
     print(f"{b}\\*  ================================  */{r}")
     print()
-
-
-# ---- Gemini 逐字稿 ----
-def transcribe_segment(audio_path: str, client: genai.Client) -> str:
-    """上傳音訊至 Gemini，取得純文字逐字稿"""
-    audio_file = client.files.upload(file=audio_path)
-    while audio_file.state.name == "PROCESSING":
-        time.sleep(2)
-        audio_file = client.files.get(name=audio_file.name)
-
-    if audio_file.state.name != "ACTIVE":
-        raise Exception(f"Gemini 檔案處理失敗（狀態：{audio_file.state.name}），請重試")
-
-    prompt = """請仔細聆聽這段音訊，將所有說話內容以原始語言逐字轉錄。
-
-輸出規則：
-1. 純文字輸出，不需要時間戳、編號或任何 JSON / Markdown 格式
-2. 依照說話者使用的語言直接轉錄原文，不需翻譯
-3. 同一說話者的連續發言合併為一個段落，說話者切換時才換段並空一行
-4. 每段開頭標註說話者：優先使用音訊中可辨識的真實姓名或職稱（如「財務長：」「主持人：」），無法辨識則使用「說話者 A：」「說話者 B：」等泛用標籤
-5. 背景雜音、靜默段、非語言音（笑聲、清喉嚨等）不需輸出
-6. 盡力辨識模糊語音，結合前後文補全語意，忠實呈現內容，不要摘要或省略"""
-
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=[prompt, audio_file],
-        )
-    except Exception as e:
-        client.files.delete(name=audio_file.name)
-        raise
-    client.files.delete(name=audio_file.name)
-    if response.text is None:
-        finish_reason = None
-        if response.candidates:
-            finish_reason = response.candidates[0].finish_reason
-        raise Exception(f"Gemini 回傳空白結果（finish_reason: {finish_reason}），可能因內容審查攔截或無法辨識音訊，請重試")
-    return response.text.strip()
 
 
 # ---- 主視窗 ----
