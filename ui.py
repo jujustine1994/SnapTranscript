@@ -586,12 +586,14 @@ class SnapTranscriptApp:
         except job.QuotaExhausted as e:
             self._log(f"\n[ERROR] {e}")
             self._finalize_log_file(success=False)
-            self._done("", success=False)
+            self._done("", success=False,
+                       failed_count=self._job.failed_count if self._job else 0)
         except Exception as e:
             self._log(f"\n[ERROR] {e}")
             write_log(f"轉錄中止 -> {type(e).__name__}", "ERROR")
             self._finalize_log_file(success=False)
-            self._done("", success=False)
+            self._done("", success=False,
+                       failed_count=self._job.failed_count if self._job else 0)
 
     # ---- 執行紀錄（累積寫入 logs/app.log，供除錯查閱） ----
     def _finalize_log_file(self, success: bool):

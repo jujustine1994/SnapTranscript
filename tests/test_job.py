@@ -359,6 +359,43 @@ class TestRetryFailed(JobTestBase):
         self.assertEqual(j.failed_count, 0)
         self.assertEqual(self.read_output(output_path).count("內容"), 2)
 
+    def test_retry_failed_saves_completed_before_quota_abort(self):
+        """補跑途中若又遇 429，該次補跑中已成功的段落仍要先寫檔。
+
+        這條測試守住「retry_failed 必須複用 _process」的約束：若有人把
+        retry_failed 改成繞過 _process 自己迴圈（跳過 except QuotaExhausted
+        先寫檔再拋出的保護），本測試必須抓到。
+        """
+        state = {"retry_round": False}
+
+        def transcribe_fn(path, client):
+            if "_temp_seg_0" in path:
+                return "第一段內容"
+            if "_temp_seg_1" in path:
+                if state["retry_round"]:
+                    return "補跑第二段成功"
+                raise Exception("503 UNAVAILABLE")
+            # _temp_seg_2（第三段）
+            if state["retry_round"]:
+                raise Exception("429 RESOURCE_EXHAUSTED")
+            raise Exception("503 UNAVAILABLE")
+
+        j = self.make_job(
+            transcribe_fn,
+            segment_list=[(0, 600), (600, 1200), (1200, 1800)],
+        )
+        output_path = j.run()
+        self.assertEqual(j.failed_count, 2)
+
+        state["retry_round"] = True
+        with self.assertRaises(job.QuotaExhausted):
+            j.retry_failed()
+
+        # 第三段觸發 429 中止整次補跑，但第二段在中止前已補跑成功，
+        # 必須先被寫進輸出檔，不能被整批丟掉
+        text = self.read_output(output_path)
+        self.assertIn("補跑第二段成功", text)
+
 
 if __name__ == "__main__":
     unittest.main()
