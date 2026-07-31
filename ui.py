@@ -11,14 +11,9 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 from dotenv import load_dotenv, set_key
 from google import genai
 
-from audio import cut_audio_segment, download_youtube_audio, get_audio_duration
-from config import (
-    DEFAULT_CHUNK_SECONDS,
-    ENV_PATH,
-    MAX_AUTO_RETRIES,
-    MODEL_NAME,
-    SCRIPT_DIR,
-)
+import job
+from audio import download_youtube_audio, get_audio_duration
+from config import DEFAULT_CHUNK_SECONDS, ENV_PATH, MODEL_NAME
 from logger import write_log, write_log_header
 from segments import (
     build_segments,
@@ -26,7 +21,6 @@ from segments import (
     parse_range,
     seconds_to_hms,
 )
-from transcriber import transcribe_segment
 
 
 # ---- 主視窗 ----
@@ -38,7 +32,7 @@ class SnapTranscriptApp:
 
         self.msg_queue: queue.Queue = queue.Queue()
         self.is_running = False
-        self.temp_files: list[str] = []
+        self._job: job.TranscriptionJob | None = None
         self.source_mode = tk.StringVar(value="local")
         self.yt_url_var = tk.StringVar()
         self.yt_save_path_var = tk.StringVar()
@@ -459,11 +453,10 @@ class SnapTranscriptApp:
         auto_retry: bool = False,
     ):
         """背景執行緒：（下載）+ 切割 + 上傳 + 轉錄 + 合併"""
-        temp_files: list[str] = []
         self.log_start_time = time.time()
         try:
             if source_info["mode"] == "youtube":
-                self._log("正在下載 YouTube 音訊，請稍候...", to_file=False)
+                self._log("正在下載 YouTube 音訊，請稍候...")
 
                 def _dl_progress(downloaded, total, speed):
                     speed_str = f"  {speed}" if speed else ""
@@ -483,19 +476,19 @@ class SnapTranscriptApp:
                     source_info["url"], source_info["save_path"],
                     progress_callback=_dl_progress,
                 )
-                self._log(f"下載完成：{os.path.basename(audio_path)}", to_file=False)
+                self._log(f"下載完成：{os.path.basename(audio_path)}")
                 if source_info["action"] == "download_only":
                     # 只下載：任務起始行只記檔名，不記完整 URL
-                    self._init_log_file(f"下載 {os.path.basename(audio_path)} | youtube")
+                    write_log_header(f"下載 {os.path.basename(audio_path)} | youtube")
                     self._finalize_log_file(success=True)
                     self._done(audio_path, success=True, download_only=True)
                     return
             else:
                 audio_path = source_info["path"]
 
-            self._log(f"讀取音訊：{os.path.basename(audio_path)}", to_file=False)
+            self._log(f"讀取音訊：{os.path.basename(audio_path)}")
             total_duration = get_audio_duration(audio_path)
-            self._log(f"總時長：{seconds_to_hms(total_duration)}", to_file=False)
+            self._log(f"總時長：{seconds_to_hms(total_duration)}")
 
             # 建立分段清單
             if range_bounds is not None:
@@ -504,8 +497,7 @@ class SnapTranscriptApp:
                     raise Exception("擷取範圍超出音訊總長度，請重新設定")
                 range_end = min(range_end, int(total_duration))
                 self._log(
-                    f"擷取範圍：{seconds_to_hms(range_start)} → {seconds_to_hms(range_end)}",
-                    to_file=False,
+                    f"擷取範圍：{seconds_to_hms(range_start)} → {seconds_to_hms(range_end)}"
                 )
             else:
                 range_start, range_end = 0, int(total_duration)
@@ -515,136 +507,47 @@ class SnapTranscriptApp:
                 auto_points = list(
                     range(range_start + DEFAULT_CHUNK_SECONDS, range_end, DEFAULT_CHUNK_SECONDS)
                 )
-                segments = build_segments(auto_points, range_start, range_end)
+                segment_list = build_segments(auto_points, range_start, range_end)
             else:
                 valid_points = [p for p in cut_points if range_start < p < range_end]
-                segments = build_segments(valid_points, range_start, range_end)
+                segment_list = build_segments(valid_points, range_start, range_end)
 
             # 任務起始行：檔名 + 模型 + 段數 + 重試設定，全塞同一行（不記 URL）
-            self._init_log_file(
+            write_log_header(
                 f"轉錄 {os.path.basename(audio_path)} | {MODEL_NAME} | "
-                f"{len(segments)}段 | 自動重試:{'開' if auto_retry else '關'}"
+                f"{len(segment_list)}段 | 自動重試:{'開' if auto_retry else '關'}"
             )
-            self._log(f"共 {len(segments)} 段，開始處理...", to_file=False)
-            self._set_progress(0, len(segments), f"0 / {len(segments)} 段完成")
+            self._log(f"共 {len(segment_list)} 段，開始處理...")
+            self._set_progress(0, len(segment_list), f"0 / {len(segment_list)} 段完成")
 
-            transcripts = []
-            ext = os.path.splitext(audio_path)[1] or ".mp3"
+            self._job = job.TranscriptionJob(
+                audio_path=audio_path,
+                segment_list=segment_list,
+                client=client,
+                auto_retry=auto_retry,
+                callbacks=job.JobCallbacks(
+                    log=self._log,
+                    progress=self._set_progress,
+                    ask=self._ask_user,
+                ),
+            )
+            output_path = self._job.run()
 
-            for i, (start_sec, end_sec) in enumerate(segments):
-                start_hms = seconds_to_hms(start_sec)
-                end_hms = seconds_to_hms(end_sec)
-                duration_sec = end_sec - start_sec
-
-                self._log(
-                    f"\n[{i + 1}/{len(segments)}] 切割 {start_hms} → {end_hms}...",
-                    to_file=False,
-                )
-
-                temp_path = os.path.join(SCRIPT_DIR, f"_temp_seg_{i}{ext}")
-                temp_files.append(temp_path)
-                cut_audio_segment(audio_path, start_sec, duration_sec, temp_path)
-
-                if not os.path.exists(temp_path):
-                    raise Exception(f"第 {i + 1} 段切割失敗，請確認 ffmpeg 是否正常運作")
-
-                self._log(
-                    f"[{i + 1}/{len(segments)}] 上傳至 Gemini，等待轉錄...",
-                    to_file=False,
-                )
-                retry_count = 0
-                while True:
-                    try:
-                        transcript = transcribe_segment(temp_path, client)
-                        break
-                    except Exception as e:
-                        err_str = str(e)
-                        # 只依關鍵字判斷成因並取 status，絕不把 {e} 全文（挾帶 URL / response body）落檔
-                        if "503" in err_str or "UNAVAILABLE" in err_str:
-                            reason = "Gemini 伺服器回傳 503"
-                            status = "503 UNAVAILABLE"
-                        elif "Gemini 回傳空白結果" in err_str:
-                            reason = "Gemini 回傳空白結果"
-                            status = "空白結果"
-                        else:
-                            raise
-
-                        # 錯誤行只記：例外類型 + status + 重試次數（規範「錯誤行怎麼寫」）
-                        self._log(
-                            f"第{i + 1}段 上傳Gemini -> {type(e).__name__} | "
-                            f"{status} | 重試 {retry_count}/{MAX_AUTO_RETRIES}",
-                            "ERROR",
-                            to_file=True,
-                        )
-                        # UI 給使用者看的可讀說明（不落檔）
-                        self._log(f"[錯誤] {reason}", to_file=False)
-                        if auto_retry:
-                            retry_count += 1
-                            if retry_count > MAX_AUTO_RETRIES:
-                                raise Exception(
-                                    f"{reason}，已自動重試 {MAX_AUTO_RETRIES} 次仍失敗"
-                                ) from e
-                            self._log(
-                                f"[{i + 1}/{len(segments)}] 自動重試中... "
-                                f"({retry_count}/{MAX_AUTO_RETRIES})",
-                                to_file=False,
-                            )
-                        else:
-                            if not self._ask_user(f"{reason}，是否重試？"):
-                                raise Exception("已取消重試") from e
-                            self._log(
-                                f"[{i + 1}/{len(segments)}] 重試中...", to_file=False
-                            )
-                transcripts.append((i + 1, start_hms, end_hms, transcript))
-                self._log(f"[{i + 1}/{len(segments)}] 完成", to_file=False)
-                self._set_progress(i + 1, len(segments), f"{i + 1} / {len(segments)} 段完成")
-
-                os.remove(temp_path)
-                temp_files.remove(temp_path)
-
-            # 合併逐字稿
-            self._log("\n合併逐字稿...", to_file=False)
-            lines = []
-            for idx, start_hms, end_hms, text in transcripts:
-                lines.append(f"=== 第 {idx} 段（{start_hms} - {end_hms}）===")
-                lines.append("")
-                lines.append(text)
-                lines.append("")
-
-            merged = "\n".join(lines).strip()
-            base = os.path.splitext(audio_path)[0]
-            output_path = base + "_transcript.txt"
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(merged)
-
-            self._log(f"\n逐字稿已儲存：{output_path}", to_file=False)
+            self._log(f"\n逐字稿已儲存：{output_path}")
             self._finalize_log_file(success=True)
             self._done(output_path, success=True)
 
-        except Exception as e:
-            err = str(e)
-            # UI 顯示完整可讀訊息幫使用者判斷；落檔只記類型 + status，不塞 {e} 全文
-            if "429" in err or "quota" in err.lower() or "exhausted" in err.lower():
-                self._log(
-                    "\n[ERROR] API 免費用量已達上限，請等明天配額重置後再試",
-                    to_file=False,
-                )
-                write_log(f"轉錄中止 -> {type(e).__name__} | HTTP 429 配額用盡", "ERROR")
-            else:
-                self._log(f"\n[ERROR] {e}", to_file=False)
-                write_log(f"轉錄中止 -> {type(e).__name__}", "ERROR")
+        except job.QuotaExhausted as e:
+            self._log(f"\n[ERROR] {e}")
             self._finalize_log_file(success=False)
             self._done("", success=False)
-        finally:
-            for f in temp_files:
-                if os.path.exists(f):
-                    os.remove(f)
+        except Exception as e:
+            self._log(f"\n[ERROR] {e}")
+            write_log(f"轉錄中止 -> {type(e).__name__}", "ERROR")
+            self._finalize_log_file(success=False)
+            self._done("", success=False)
 
     # ---- 執行紀錄（累積寫入 logs/app.log，供除錯查閱） ----
-    def _init_log_file(self, task_desc: str):
-        """任務起始：寫單行 header 到 logs/app.log（唯一有完整日期的行）"""
-        write_log_header(task_desc)
-
     def _finalize_log_file(self, success: bool):
         """任務結束：寫一行成功/失敗 + 耗時"""
         elapsed = int(time.time() - self.log_start_time)
@@ -662,16 +565,11 @@ class SnapTranscriptApp:
         reply_event.wait()
         return reply_holder[0]
 
-    def _log(self, msg: str, level: str = "INFO", to_file: bool = False):
-        """一個呼叫同時（可選）落檔 + 推 UI queue。
-
-        落檔的只有三種：任務起始（write_log_header）、錯誤行、任務結果，
-        這三種要顯式傳 to_file=True；其餘進度／中間步驟一律不傳，只推 UI。
-        預設 False 是故意的：漏帶旗標的後果是少記一行，不是把不該落檔的
-        東西寫上磁碟。
+    def _log(self, msg: str):
+        """推一行訊息到 UI queue。落檔改由呼叫端直接呼叫 write_log /
+        write_log_header（只有任務起始、錯誤行、任務結果三種情況落檔，
+        見 ARCHITECTURE.md 落檔紀律），這個方法本身不落檔。
         """
-        if to_file:
-            write_log(msg, level)
         self.msg_queue.put(("log", msg))
 
     def _set_progress(self, current: int, total: int, label: str):
