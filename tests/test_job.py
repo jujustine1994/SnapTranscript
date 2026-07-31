@@ -143,6 +143,54 @@ class TestRetry(JobTestBase):
         j = self.make_job(always_503)
         with self.assertRaises(Exception):
             j.run()
+        # 5 次重試 × 每次 20 秒
+        self.assertEqual(self.sleeper.total, 100)
+
+    def test_waits_20_seconds_before_retry(self):
+        state = {"calls": 0}
+
+        def flaky(path, client):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise Exception("503 UNAVAILABLE")
+            return "成功內容"
+
+        j = self.make_job(flaky)
+        j.run()
+
+        # 退避以 1 秒一輪的倒數迴圈實作，累計等待秒數應為 20
+        self.assertEqual(self.sleeper.total, 20)
+        self.assertTrue(all(s == 1 for s in self.sleeper.calls))
+
+    def test_countdown_shown_in_progress_label(self):
+        state = {"calls": 0}
+
+        def flaky(path, client):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise Exception("503 UNAVAILABLE")
+            return "成功內容"
+
+        j = self.make_job(flaky)
+        j.run()
+
+        labels = [label for _, _, label in self.recorded["progress"]]
+        self.assertIn("第 1 段重試中... 20 秒 (1/5)", labels)
+        self.assertIn("第 1 段重試中... 1 秒 (1/5)", labels)
+
+    def test_no_wait_when_manual_retry(self):
+        """未勾自動重試時走 dialog，不套用退避（使用者按確認的時間就是等待）"""
+        state = {"calls": 0}
+
+        def flaky(path, client):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise Exception("503 UNAVAILABLE")
+            return "成功內容"
+
+        j = self.make_job(flaky, auto_retry=False)
+        j.run()
+        self.assertEqual(self.sleeper.total, 0)
 
 
 class TestManualRetry(JobTestBase):

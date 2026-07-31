@@ -149,10 +149,30 @@ class TranscriptionJob:
                         f"[{r.index}/{self.total}] 自動重試中... "
                         f"({retry_count}/{config.MAX_AUTO_RETRIES})"
                     )
+                    self._wait_before_retry(r, retry_count)
                 else:
                     if not self.cb.ask(f"{reason}，是否重試？"):
                         raise Exception("已取消重試") from e
                     self.cb.log(f"[{r.index}/{self.total}] 重試中...")
+
+    def _wait_before_retry(self, r: SegmentResult, retry_count: int):
+        """重試前固定等待。
+
+        503 的語意是伺服器滿載，0 秒後重打仍然滿載——不等待的話 5 次重試
+        會在數秒內全部燒完。用 1 秒一輪的倒數而非單次 sleep，是為了讓
+        進度標籤能更新，UI 才不會看起來像凍結。
+        """
+        for remaining in range(config.RETRY_WAIT_SECONDS, 0, -1):
+            self.cb.progress(
+                self.done_count, self.total,
+                f"第 {r.index} 段重試中... {remaining} 秒 "
+                f"({retry_count}/{config.MAX_AUTO_RETRIES})",
+            )
+            self._sleep(1)
+        self.cb.progress(
+            self.done_count, self.total,
+            f"{self.done_count} / {self.total} 段完成",
+        )
 
     # ---- 輸出 ----
     def _write_output(self) -> str:
