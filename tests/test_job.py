@@ -2,10 +2,20 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import job
+
+
+def _is_segment(path, index):
+    """精確判斷 path 是否為第 index 段（從 0 起算）的暫存檔。
+
+    不可用 `f"_temp_seg_{index}" in path` 做子字串比對：段數到兩位數時
+    `_temp_seg_1` 會誤匹配 `_temp_seg_10`。
+    """
+    return os.path.basename(path).startswith(f"_temp_seg_{index}.")
 
 
 def make_callbacks(ask_returns=True):
@@ -52,6 +62,20 @@ class JobTestBase(unittest.TestCase):
         with open(self.audio_path, "wb") as f:
             f.write(b"fake source audio")
         self.addCleanup(self.tmpdir.cleanup)
+
+        # 隔離真實的 logs/app.log 與專案根目錄：測試不該把假錯誤灌進使用者
+        # 真實的除錯紀錄，也不該把暫存檔寫進真實的 config.SCRIPT_DIR。
+        self.written_logs = []
+
+        def _fake_write_log(msg, level="INFO"):
+            self.written_logs.append((level, msg))
+
+        patcher_log = patch.object(job.logger, "write_log", side_effect=_fake_write_log)
+        patcher_dir = patch.object(job.config, "SCRIPT_DIR", self.tmpdir.name)
+        patcher_log.start()
+        patcher_dir.start()
+        self.addCleanup(patcher_log.stop)
+        self.addCleanup(patcher_dir.stop)
 
     def read_output(self, path):
         with open(path, encoding="utf-8") as f:
@@ -119,13 +143,25 @@ class TestRetry(JobTestBase):
         self.assertIn("成功內容", self.read_output(output_path))
 
     def test_unknown_error_propagates(self):
-        def boom(path, client):
+        """未分類例外仍要中止任務，但中止前已完成的段落必須先寫檔——
+
+        這正是「單段失敗不中止整個任務」這個分支要解決的缺陷，只是換了
+        觸發路徑（未分類例外而非 429）：不能因為換了路徑就又復發。
+        """
+        def second_segment_booms(path, client):
+            if _is_segment(path, 0):
+                return "第一段內容"
             raise Exception("磁碟讀取失敗")
 
-        j = self.make_job(boom)
+        j = self.make_job(second_segment_booms)
         with self.assertRaises(Exception) as ctx:
             j.run()
         self.assertIn("磁碟讀取失敗", str(ctx.exception))
+
+        # 第 1 段已完成，即使第 2 段的未分類例外中止了整個任務，
+        # 第 1 段的逐字稿也必須已經存檔
+        text = self.read_output(j.output_path)
+        self.assertIn("第一段內容", text)
 
     def test_quota_error_raises_quota_exhausted(self):
         def quota(path, client):
@@ -152,7 +188,7 @@ class TestRetry(JobTestBase):
     def test_failed_segment_does_not_block_later_segments(self):
         def second_fails(path, client):
             # 第 2 段的暫存檔名是 _temp_seg_1
-            if "_temp_seg_1" in path:
+            if _is_segment(path, 1):
                 raise Exception("503 UNAVAILABLE")
             return "第一段內容"
 
@@ -191,7 +227,7 @@ class TestRetry(JobTestBase):
 
     def test_quota_error_still_aborts_but_saves_completed(self):
         def first_ok_then_quota(path, client):
-            if "_temp_seg_0" in path:
+            if _is_segment(path, 0):
                 return "第一段內容"
             raise Exception("429 RESOURCE_EXHAUSTED")
 
@@ -207,7 +243,7 @@ class TestRetry(JobTestBase):
     def test_unprocessed_segment_placeholder_has_no_none(self):
         """429 中止時後面段落根本沒被處理，佔位符不能印出「失敗：None」"""
         def first_ok_then_quota(path, client):
-            if "_temp_seg_0" in path:
+            if _is_segment(path, 0):
                 return "第一段內容"
             raise Exception("429 RESOURCE_EXHAUSTED")
 
@@ -302,9 +338,9 @@ class TestRetryFailed(JobTestBase):
         state = {"fail_second": True}
 
         def second_fails_first_round(path, client):
-            if "_temp_seg_1" in path and state["fail_second"]:
+            if _is_segment(path, 1) and state["fail_second"]:
                 raise Exception("503 UNAVAILABLE")
-            return "補跑成功內容" if "_temp_seg_1" in path else "第一段內容"
+            return "補跑成功內容" if _is_segment(path, 1) else "第一段內容"
 
         j = self.make_job(second_fails_first_round)
         output_path = j.run()
@@ -325,7 +361,7 @@ class TestRetryFailed(JobTestBase):
 
         def tracker(path, client):
             state["calls"].append(os.path.basename(path))
-            if "_temp_seg_1" in path and state["fail_second"]:
+            if _is_segment(path, 1) and state["fail_second"]:
                 raise Exception("503 UNAVAILABLE")
             return "內容"
 
@@ -336,11 +372,11 @@ class TestRetryFailed(JobTestBase):
         j.retry_failed()
 
         # 補跑只碰第 2 段，第 1 段不該被重打
-        self.assertTrue(all("_temp_seg_1" in name for name in state["calls"]))
+        self.assertTrue(all(name.startswith("_temp_seg_1.") for name in state["calls"]))
 
     def test_retry_failed_can_fail_again(self):
         def always_fails_second(path, client):
-            if "_temp_seg_1" in path:
+            if _is_segment(path, 1):
                 raise Exception("503 UNAVAILABLE")
             return "第一段內容"
 
@@ -369,9 +405,9 @@ class TestRetryFailed(JobTestBase):
         state = {"retry_round": False}
 
         def transcribe_fn(path, client):
-            if "_temp_seg_0" in path:
+            if _is_segment(path, 0):
                 return "第一段內容"
-            if "_temp_seg_1" in path:
+            if _is_segment(path, 1):
                 if state["retry_round"]:
                     return "補跑第二段成功"
                 raise Exception("503 UNAVAILABLE")
@@ -395,6 +431,106 @@ class TestRetryFailed(JobTestBase):
         # 必須先被寫進輸出檔，不能被整批丟掉
         text = self.read_output(output_path)
         self.assertIn("補跑第二段成功", text)
+
+
+class TestCutFailure(JobTestBase):
+    def test_cut_failure_marks_segment_failed_and_continues(self):
+        """ffmpeg 切割失敗（音訊檔在轉錄途中被移走/刪除）不該拖垮整個任務，
+        只應該降級成單段失敗，讓其他段落照跑。"""
+        def noop_cut(audio_path, start_sec, duration_sec, output_path):
+            pass   # 什麼都不做，temp_path 就不會存在
+
+        callbacks, recorded = make_callbacks()
+        self.recorded = recorded
+        j = job.TranscriptionJob(
+            audio_path=self.audio_path,
+            segment_list=[(0, 1800), (1800, 3600)],
+            client=None,
+            auto_retry=True,
+            callbacks=callbacks,
+            transcribe_fn=lambda path, client: "第二段內容",
+            cut_fn=noop_cut,
+            sleep_fn=FakeSleep(),
+        )
+        output_path = j.run()   # 不應拋例外
+
+        self.assertEqual(j.failed_count, 2)
+        text = self.read_output(output_path)
+        self.assertIn("切割失敗", text)
+
+    def test_cut_failure_does_not_block_other_segments(self):
+        """第 1 段切割失敗，第 2 段用真的假切割函式，應該正常成功。"""
+        def cut_only_second(audio_path, start_sec, duration_sec, output_path):
+            if _is_segment(output_path, 1):
+                fake_cut(audio_path, start_sec, duration_sec, output_path)
+            # 第 1 段：什麼都不做，temp_path 不存在
+
+        callbacks, recorded = make_callbacks()
+        self.recorded = recorded
+        j = job.TranscriptionJob(
+            audio_path=self.audio_path,
+            segment_list=[(0, 1800), (1800, 3600)],
+            client=None,
+            auto_retry=True,
+            callbacks=callbacks,
+            transcribe_fn=lambda path, client: "第二段內容",
+            cut_fn=cut_only_second,
+            sleep_fn=FakeSleep(),
+        )
+        output_path = j.run()
+
+        self.assertEqual(j.done_count, 1)
+        self.assertEqual(j.failed_count, 1)
+        text = self.read_output(output_path)
+        self.assertIn("第二段內容", text)
+        self.assertIn("切割失敗", text)
+
+
+class TestAtomicWrite(JobTestBase):
+    def test_no_tmp_file_left_after_write(self):
+        """_write_output 先寫 .tmp 再 os.replace，成功後不該留下 .tmp 殘檔。"""
+        j = self.make_job(lambda path, client: "內容")
+        output_path = j.run()
+
+        self.assertTrue(os.path.exists(output_path))
+        self.assertFalse(os.path.exists(output_path + ".tmp"))
+
+    def test_retry_write_does_not_truncate_on_success(self):
+        """補跑成功後原地覆寫，既有段落內容應完整保留（原子寫入，不會截斷）。"""
+        state = {"fail_second": True}
+
+        def transcribe_fn(path, client):
+            if _is_segment(path, 1) and state["fail_second"]:
+                raise Exception("503 UNAVAILABLE")
+            return "補跑成功內容" if _is_segment(path, 1) else "第一段內容"
+
+        j = self.make_job(transcribe_fn)
+        j.run()
+        state["fail_second"] = False
+        output_path = j.retry_failed()
+
+        text = self.read_output(output_path)
+        self.assertIn("第一段內容", text)
+        self.assertIn("補跑成功內容", text)
+        self.assertFalse(os.path.exists(output_path + ".tmp"))
+
+
+class TestLogHygiene(JobTestBase):
+    def test_error_log_never_contains_raw_exception_text(self):
+        """落檔紀律：錯誤行只記 type(e).__name__ 與 status，絕不能把例外
+        全文落檔——例外訊息可能挾帶 URL / response body。用一個訊息帶有
+        敏感內容的例外，斷言落檔內容完全不含那段敏感文字。"""
+        def leaky(path, client):
+            raise Exception(
+                "503 UNAVAILABLE https://secret.example.com/leak?token=abc123"
+            )
+
+        j = self.make_job(leaky, segment_list=[(0, 1800)])
+        j.run()
+
+        all_msgs = " ".join(msg for _level, msg in self.written_logs)
+        self.assertNotIn("secret.example.com", all_msgs)
+        self.assertNotIn("token=abc123", all_msgs)
 
 
 if __name__ == "__main__":

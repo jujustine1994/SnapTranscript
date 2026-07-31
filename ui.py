@@ -385,12 +385,12 @@ class SnapTranscriptApp:
         except job.QuotaExhausted as e:
             self._log(f"\n[ERROR] {e}")
             self._finalize_log_file(success=False)
-            self._done("", success=False, failed_count=self._job.failed_count)
+            self._done(self._job.output_path, success=False, failed_count=self._job.failed_count)
         except Exception as e:
             self._log(f"\n[ERROR] {e}")
             write_log(f"補跑中止 -> {type(e).__name__}", "ERROR")
             self._finalize_log_file(success=False)
-            self._done("", success=False, failed_count=self._job.failed_count)
+            self._done(self._job.output_path, success=False, failed_count=self._job.failed_count)
 
     def _select_save_path(self):
         path = filedialog.asksaveasfilename(
@@ -484,6 +484,10 @@ class SnapTranscriptApp:
         self.progress_label.config(text="準備中...")
         self.is_running = True
         self.btn_start.config(state="disabled")
+        # 新任務開始前清掉上一個 job：若前置檢查（讀取音訊/切段）在
+        # self._job 被重新賦值前就失敗，except 分支不能誤用上一個任務的
+        # failed_count/audio_path（會導致補跑按鈕指向上一個音訊檔）
+        self._job = None
 
         auto_retry = self.auto_retry_var.get()
 
@@ -590,13 +594,13 @@ class SnapTranscriptApp:
         except job.QuotaExhausted as e:
             self._log(f"\n[ERROR] {e}")
             self._finalize_log_file(success=False)
-            self._done("", success=False,
+            self._done(self._job.output_path if self._job else "", success=False,
                        failed_count=self._job.failed_count if self._job else 0)
         except Exception as e:
             self._log(f"\n[ERROR] {e}")
             write_log(f"轉錄中止 -> {type(e).__name__}", "ERROR")
             self._finalize_log_file(success=False)
-            self._done("", success=False,
+            self._done(self._job.output_path if self._job else "", success=False,
                        failed_count=self._job.failed_count if self._job else 0)
 
     # ---- 執行紀錄（累積寫入 logs/app.log，供除錯查閱） ----
@@ -687,6 +691,15 @@ class SnapTranscriptApp:
                             messagebox.showinfo("完成", f"逐字稿已儲存：\n{output_path}")
                     else:
                         self.progress_label.config(text="發生錯誤，請查看上方記錄")
+                        if output_path:
+                            # 中止前已完成的段落仍先存了檔（見 job.py 的中止保護），
+                            # 使用者要能找到這份部分逐字稿，不能讓它悄悄躺在磁碟上
+                            self._last_output_path = output_path
+                            self.btn_open_folder.pack(side="left")
+                            self.output_label.config(
+                                text=f"輸出（部分完成）：{output_path}",
+                                foreground="#b8860b",
+                            )
                         if failed_count > 0:
                             self.btn_retry_failed.config(
                                 text=f"重試失敗的 {failed_count} 段"

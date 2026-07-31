@@ -55,7 +55,7 @@ class TranscriptionJob:
         self.cb = callbacks
         self._transcribe = transcribe_fn or transcriber.transcribe_segment
         self._cut = cut_fn or audio.cut_audio_segment
-        self._sleep = sleep_fn or time.sleep  # Task 7 的重試退避才會用到，目前無呼叫點
+        self._sleep = sleep_fn or time.sleep
 
         self.results = [
             SegmentResult(index=i + 1, start_sec=s, end_sec=e)
@@ -102,6 +102,11 @@ class TranscriptionJob:
             # 配額用盡要中止，但已完成的段落先寫檔，不能整份丟掉
             self._write_output()
             raise
+        except Exception:
+            # 任何未分類的原因中止（網路中斷、逾時、程式錯誤...），也要先
+            # 保住已完成的段落，不能讓部分逐字稿隨中止一起消失
+            self._write_output()
+            raise
         return self._write_output()
 
     def _process_one(self, r: SegmentResult):
@@ -115,7 +120,11 @@ class TranscriptionJob:
         try:
             self._cut(self.audio_path, r.start_sec, r.end_sec - r.start_sec, temp_path)
             if not os.path.exists(temp_path):
-                raise Exception(f"第 {r.index} 段切割失敗，請確認 ffmpeg 是否正常運作")
+                self._mark_failed(
+                    r, "切割失敗",
+                    f"第 {r.index} 段切割失敗，請確認 ffmpeg 是否正常運作",
+                )
+                return
 
             self.cb.log(f"[{r.index}/{self.total}] 上傳至 Gemini，等待轉錄...")
             text = self._transcribe_with_retry(r, temp_path)
@@ -144,7 +153,8 @@ class TranscriptionJob:
                         f"轉錄中止 -> {type(e).__name__} | HTTP 429 配額用盡", "ERROR"
                     )
                     raise QuotaExhausted(
-                        "API 免費用量已達上限，請等明天配額重置後再試"
+                        "已達 Gemini API 用量上限（可能是短時間內請求過多，或當日額度用盡）。"
+                        "已完成的段落已存檔，請稍後用「重試失敗的段落」補跑。"
                     ) from e
 
                 classified = transcriber.classify_error(e)
@@ -228,6 +238,10 @@ class TranscriptionJob:
             lines.append("")
 
         merged = "\n".join(lines).strip()
-        with open(self.output_path, "w", encoding="utf-8") as f:
+        # 先寫暫存檔再 os.replace：補跑是原地覆寫既有逐字稿，中途中斷不能
+        # 讓使用者手上已有的成功段落被截斷（os.replace 在 Windows 上是原子的）
+        tmp_path = self.output_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
             f.write(merged)
+        os.replace(tmp_path, self.output_path)
         return self.output_path

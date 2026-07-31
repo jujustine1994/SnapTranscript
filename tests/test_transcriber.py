@@ -26,8 +26,10 @@ class TestClassifyError(unittest.TestCase):
         self.assertIsNone(transcriber.classify_error(Exception("檔案讀取失敗")))
 
     def test_quota_error_is_not_retryable(self):
-        # 429 屬於配額問題，不該被歸類為可重試
-        self.assertIsNone(transcriber.classify_error(Exception("429 RESOURCE_EXHAUSTED")))
+        # 訊息同時含 429 與 UNAVAILABLE：quota 判斷若沒排在 503 之前，這裡會回傳 503 tuple
+        self.assertIsNone(
+            transcriber.classify_error(Exception("429 RESOURCE_EXHAUSTED: model UNAVAILABLE"))
+        )
 
 
 class TestIsQuotaError(unittest.TestCase):
