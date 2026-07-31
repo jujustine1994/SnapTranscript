@@ -135,16 +135,93 @@ class TestRetry(JobTestBase):
         with self.assertRaises(job.QuotaExhausted):
             j.run()
 
-    def test_exhausted_retries_raise(self):
-        """Task 6 的現有行為：重試耗盡拋例外中止。Task 8 會改成標記後續跑。"""
+    def test_exhausted_retries_marks_failure_and_continues(self):
         def always_503(path, client):
             raise Exception("503 UNAVAILABLE")
 
         j = self.make_job(always_503)
-        with self.assertRaises(Exception):
+        output_path = j.run()   # 不再拋例外
+
+        self.assertEqual(j.failed_count, 2)
+        self.assertEqual(j.done_count, 0)
+        # 每段 5 次重試 × 20 秒 × 2 段
+        self.assertEqual(self.sleeper.total, 200)
+        text = self.read_output(output_path)
+        self.assertIn("[此段轉錄失敗：", text)
+
+    def test_failed_segment_does_not_block_later_segments(self):
+        def second_fails(path, client):
+            # 第 2 段的暫存檔名是 _temp_seg_1
+            if "_temp_seg_1" in path:
+                raise Exception("503 UNAVAILABLE")
+            return "第一段內容"
+
+        j = self.make_job(second_fails)
+        output_path = j.run()
+
+        self.assertEqual(j.done_count, 1)
+        self.assertEqual(j.failed_count, 1)
+        text = self.read_output(output_path)
+        self.assertIn("第一段內容", text)
+        self.assertIn("=== 第 2 段（00:30:00 - 01:00:00）===", text)
+        self.assertIn("[此段轉錄失敗：", text)
+
+    def test_all_segments_fail_still_writes_output(self):
+        def always_503(path, client):
+            raise Exception("503 UNAVAILABLE")
+
+        j = self.make_job(always_503)
+        output_path = j.run()
+
+        text = self.read_output(output_path)
+        self.assertEqual(text.count("[此段轉錄失敗："), 2)
+        self.assertIn("=== 第 1 段（00:00:00 - 00:30:00）===", text)
+        self.assertIn("=== 第 2 段（00:30:00 - 01:00:00）===", text)
+
+    def test_placeholder_contains_reason_and_hint(self):
+        def always_503(path, client):
+            raise Exception("503 UNAVAILABLE")
+
+        j = self.make_job(always_503, segment_list=[(0, 1800)])
+        output_path = j.run()
+
+        text = self.read_output(output_path)
+        self.assertIn("Gemini 伺服器回傳 503", text)
+        self.assertIn("可於程式內重試", text)
+
+    def test_quota_error_still_aborts_but_saves_completed(self):
+        def first_ok_then_quota(path, client):
+            if "_temp_seg_0" in path:
+                return "第一段內容"
+            raise Exception("429 RESOURCE_EXHAUSTED")
+
+        j = self.make_job(first_ok_then_quota)
+        with self.assertRaises(job.QuotaExhausted):
             j.run()
-        # 5 次重試 × 每次 20 秒
-        self.assertEqual(self.sleeper.total, 100)
+
+        # 中止前已完成的段落必須先寫檔，不能整份丟掉
+        with open(j.output_path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("第一段內容", text)
+
+    def test_unprocessed_segment_placeholder_has_no_none(self):
+        """429 中止時後面段落根本沒被處理，佔位符不能印出「失敗：None」"""
+        def first_ok_then_quota(path, client):
+            if "_temp_seg_0" in path:
+                return "第一段內容"
+            raise Exception("429 RESOURCE_EXHAUSTED")
+
+        j = self.make_job(
+            first_ok_then_quota,
+            segment_list=[(0, 1800), (1800, 3600), (3600, 5400)],
+        )
+        with self.assertRaises(job.QuotaExhausted):
+            j.run()
+
+        with open(j.output_path, encoding="utf-8") as f:
+            text = f.read()
+        self.assertNotIn("失敗：None", text)
+        self.assertIn("任務中止，此段尚未處理", text)
 
     def test_waits_20_seconds_before_retry(self):
         state = {"calls": 0}
@@ -207,6 +284,17 @@ class TestManualRetry(JobTestBase):
         j.run()
         self.assertEqual(len(self.recorded["asked"]), 1)
         self.assertIn("是否重試", self.recorded["asked"][0])
+
+    def test_user_declines_marks_failure_and_continues(self):
+        def always_503(path, client):
+            raise Exception("503 UNAVAILABLE")
+
+        j = self.make_job(always_503, auto_retry=False, ask_returns=False)
+        output_path = j.run()   # 不再拋例外
+
+        self.assertEqual(j.failed_count, 2)
+        text = self.read_output(output_path)
+        self.assertIn("使用者取消重試", text)
 
 
 if __name__ == "__main__":

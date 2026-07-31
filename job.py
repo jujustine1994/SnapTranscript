@@ -83,12 +83,17 @@ class TranscriptionJob:
         return self._process(list(self.results))
 
     def _process(self, targets: list[SegmentResult]) -> str:
-        for r in targets:
-            self._process_one(r)
-            self.cb.progress(
-                self.done_count, self.total,
-                f"{self.done_count} / {self.total} 段完成",
-            )
+        try:
+            for r in targets:
+                self._process_one(r)
+                self.cb.progress(
+                    self.done_count, self.total,
+                    f"{self.done_count} / {self.total} 段完成",
+                )
+        except QuotaExhausted:
+            # 配額用盡要中止，但已完成的段落先寫檔，不能整份丟掉
+            self._write_output()
+            raise
         return self._write_output()
 
     def _process_one(self, r: SegmentResult):
@@ -105,14 +110,22 @@ class TranscriptionJob:
                 raise Exception(f"第 {r.index} 段切割失敗，請確認 ffmpeg 是否正常運作")
 
             self.cb.log(f"[{r.index}/{self.total}] 上傳至 Gemini，等待轉錄...")
-            r.text = self._transcribe_with_retry(r, temp_path)
+            text = self._transcribe_with_retry(r, temp_path)
+            if text is None:
+                return   # 已由 _mark_failed 記錄原因，繼續下一段
+            r.text = text
             r.error = None
             self.cb.log(f"[{r.index}/{self.total}] 完成")
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
 
-    def _transcribe_with_retry(self, r: SegmentResult, temp_path: str) -> str:
+    def _transcribe_with_retry(self, r: SegmentResult, temp_path: str) -> str | None:
+        """回傳逐字稿；重試耗盡或使用者放棄時設定 r.error 並回傳 None。
+
+        回傳 None 不是錯誤處理的偷懶——單段失敗不該毀掉整個任務，
+        呼叫端會標記這段、繼續跑下一段，結束後可用「重試失敗的 N 段」補跑。
+        """
         retry_count = 0
         while True:
             try:
@@ -142,9 +155,10 @@ class TranscriptionJob:
                 if self.auto_retry:
                     retry_count += 1
                     if retry_count > config.MAX_AUTO_RETRIES:
-                        raise Exception(
-                            f"{reason}，已自動重試 {config.MAX_AUTO_RETRIES} 次仍失敗"
-                        ) from e
+                        return self._mark_failed(
+                            r, status,
+                            f"{reason}，已自動重試 {config.MAX_AUTO_RETRIES} 次仍失敗",
+                        )
                     self.cb.log(
                         f"[{r.index}/{self.total}] 自動重試中... "
                         f"({retry_count}/{config.MAX_AUTO_RETRIES})"
@@ -152,8 +166,17 @@ class TranscriptionJob:
                     self._wait_before_retry(r, retry_count)
                 else:
                     if not self.cb.ask(f"{reason}，是否重試？"):
-                        raise Exception("已取消重試") from e
+                        return self._mark_failed(
+                            r, status, f"{reason}（使用者取消重試）"
+                        )
                     self.cb.log(f"[{r.index}/{self.total}] 重試中...")
+
+    def _mark_failed(self, r: SegmentResult, status: str, reason: str) -> None:
+        """標記單段最終失敗，回傳 None 讓呼叫端繼續下一段。"""
+        r.error = reason
+        logger.write_log(f"第{r.index}段 最終失敗 -> {status}", "ERROR")
+        self.cb.log(f"[{r.index}/{self.total}] {reason}，標記後繼續")
+        return None
 
     def _wait_before_retry(self, r: SegmentResult, retry_count: int):
         """重試前固定等待。
@@ -176,16 +199,24 @@ class TranscriptionJob:
 
     # ---- 輸出 ----
     def _write_output(self) -> str:
+        """合併所有段落寫檔。失敗段落寫佔位符，不因此少一段。
+
+        可重複呼叫：補跑成功後再叫一次就會原地覆寫同一個檔案。
+        """
         self.cb.log("\n合併逐字稿...")
         lines = []
         for r in self.results:
-            if r.text is None:
-                continue
             start_hms = segmod.seconds_to_hms(r.start_sec)
             end_hms = segmod.seconds_to_hms(r.end_sec)
             lines.append(f"=== 第 {r.index} 段（{start_hms} - {end_hms}）===")
             lines.append("")
-            lines.append(r.text)
+            if r.text is not None:
+                lines.append(r.text)
+            else:
+                # r.error 為 None 代表這段根本沒被處理到（例如前一段觸發 429 中止），
+                # 不能讓佔位符印出「失敗：None」
+                reason = r.error or "任務中止，此段尚未處理"
+                lines.append(f"[此段轉錄失敗：{reason}，可於程式內重試]")
             lines.append("")
 
         merged = "\n".join(lines).strip()
