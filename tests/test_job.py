@@ -12,10 +12,14 @@ import job
 def _is_segment(path, index):
     """精確判斷 path 是否為第 index 段（從 0 起算）的暫存檔。
 
-    不可用 `f"_temp_seg_{index}" in path` 做子字串比對：段數到兩位數時
-    `_temp_seg_1` 會誤匹配 `_temp_seg_10`。
+    暫存檔名格式是 `_temp_seg_<pid>_<index><副檔名>`，PID 是為了讓兩個
+    SnapTranscript 同時跑時不會共用檔名（見 job.py 的 _temp_tag）。
+
+    不可用 `f"_{index}" in path` 做子字串比對：段數到兩位數時
+    `_1` 會誤匹配 `_10`，PID 裡的數字也會誤中。
     """
-    return os.path.basename(path).startswith(f"_temp_seg_{index}.")
+    name = os.path.basename(path)
+    return name.rsplit(".", 1)[0].endswith(f"_{index}")
 
 
 def make_callbacks(ask_returns=True):
@@ -372,7 +376,7 @@ class TestRetryFailed(JobTestBase):
         j.retry_failed()
 
         # 補跑只碰第 2 段，第 1 段不該被重打
-        self.assertTrue(all(name.startswith("_temp_seg_1.") for name in state["calls"]))
+        self.assertTrue(all(_is_segment(name, 1) for name in state["calls"]))
 
     def test_retry_failed_can_fail_again(self):
         def always_fails_second(path, client):
@@ -484,6 +488,48 @@ class TestCutFailure(JobTestBase):
         text = self.read_output(output_path)
         self.assertIn("第二段內容", text)
         self.assertIn("切割失敗", text)
+
+
+class TestTempFileIsolation(JobTestBase):
+    """暫存檔名必須帶 PID，否則兩個 SnapTranscript 同時跑會互相刪檔。
+
+    實測重現過：舊程序收尾時的 finally 把新程序剛切好的暫存檔刪掉，
+    新程序的 os.path.exists 檢查失敗，記了一行假的「切割失敗」。
+    """
+
+    def test_temp_path_contains_pid(self):
+        seen = []
+
+        def capture(audio_path, start_sec, duration_sec, output_path):
+            seen.append(os.path.basename(output_path))
+            fake_cut(audio_path, start_sec, duration_sec, output_path)
+
+        j = self.make_job(lambda p, c: "內容")
+        j._cut = capture
+        j.run()
+
+        pid = str(os.getpid())
+        self.assertTrue(all(pid in name for name in seen), seen)
+
+    def test_two_jobs_do_not_share_temp_paths(self):
+        """同一支程式裡兩個 job 的暫存檔名不得互撞（模擬兩個實例）。"""
+        paths_a, paths_b = [], []
+
+        def make_capture(bucket):
+            def capture(audio_path, start_sec, duration_sec, output_path):
+                bucket.append(os.path.basename(output_path))
+                fake_cut(audio_path, start_sec, duration_sec, output_path)
+            return capture
+
+        job_a = self.make_job(lambda p, c: "A")
+        job_a._cut = make_capture(paths_a)
+        job_b = self.make_job(lambda p, c: "B")
+        job_b._temp_tag = f"{os.getpid()}x"   # 模擬另一個行程的 PID
+        job_b._cut = make_capture(paths_b)
+
+        job_a.run()
+        job_b.run()
+        self.assertEqual(set(paths_a) & set(paths_b), set())
 
 
 class TestAtomicWrite(JobTestBase):

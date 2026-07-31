@@ -63,6 +63,10 @@ class TranscriptionJob:
         ]
         self.output_path = os.path.splitext(audio_path)[0] + "_transcript.txt"
         self._ext = os.path.splitext(audio_path)[1] or ".mp3"
+        # 暫存檔名帶 PID：兩個 SnapTranscript 同時跑時，檔名若只有段號會互相
+        # 覆寫、甚至把對方剛切好的檔案在 finally 裡刪掉，造成假的「切割失敗」
+        # 或段落內容錯置（實測重現過）
+        self._temp_tag = os.getpid()
 
     # ---- 狀態查詢 ----
     @property
@@ -115,7 +119,7 @@ class TranscriptionJob:
         self.cb.log(f"\n[{r.index}/{self.total}] 切割 {start_hms} → {end_hms}...")
 
         temp_path = os.path.join(
-            config.SCRIPT_DIR, f"_temp_seg_{r.index - 1}{self._ext}"
+            config.SCRIPT_DIR, f"_temp_seg_{self._temp_tag}_{r.index - 1}{self._ext}"
         )
         try:
             self._cut(self.audio_path, r.start_sec, r.end_sec - r.start_sec, temp_path)
