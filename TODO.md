@@ -7,6 +7,9 @@
 - [ ] 測試不同音訊格式（mp3 / m4a / wav / flac）
 - [ ] 測試超長音訊（>2 小時）的記憶體與穩定性
 - [ ] 擷取範圍功能 end-to-end 實測（含實際呼叫 Gemini 轉錄該範圍音訊）
+- [ ] 每次改完程式要同步更新 .md 文件（ARCHITECTURE / README / CHANGELOG / PITFALLS）
+      —— 這輪重構事後才發現三處失準：PITFALLS 指到已搬走的 main.py、
+      ARCHITECTURE 寫著已更名的 `_write_log`、README 寫的啟動器檔名根本不存在
 
 ## 設定步驟（首次使用）
 
