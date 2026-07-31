@@ -10,7 +10,15 @@
 |------|------|
 | `Run SnapTranscript.bat` | 薄殼啟動器：只呼叫 launcher.ps1 |
 | `launcher.ps1` | 環境檢查、首次安裝說明、建立 venv、啟動主程式 |
-| `main.py` | 主程式：GUI + YouTube 下載 + 切割邏輯 + Gemini API 呼叫 |
+| `main.py` | 程式入口：banner + Tk root |
+| `config.py` | 全域常數（模型、切割長度、重試設定） |
+| `logger.py` | `logs/app.log` 落檔 |
+| `segments.py` | 時間字串解析 + 分段計算（純函式） |
+| `audio.py` | ffprobe 取時長 / ffmpeg 切割 / yt-dlp 下載 |
+| `transcriber.py` | Gemini 呼叫、prompt、錯誤分類 |
+| `job.py` | 轉錄流程編排（不 import tkinter，可獨立測試） |
+| `ui.py` | `SnapTranscriptApp` 主視窗 |
+| `tests/` | unittest 測試（`python -m unittest discover -s tests`） |
 | `requirements.txt` | Python 套件清單（google-genai、python-dotenv、yt-dlp） |
 | `.env` | API Key 儲存（不進版控） |
 | `.gitignore` | 排除 venv、.env、暫存檔 |
@@ -35,25 +43,32 @@ Run SnapTranscript.bat
                     ├─ [YouTube 模式] yt-dlp 下載音訊（原始最佳音質轉 mp3）
                     ├─ ffprobe 取得音訊總時長
                     ├─ 建立分段清單 [(start, end), ...]（限制在擷取範圍內）
-                    └─ 逐段處理：
+                    └─ 逐段處理（job.TranscriptionJob）：
                           ├─ ffmpeg 切割暫存檔
                           ├─ genai.upload_file 上傳
                           ├─ gemini-flash-latest 轉錄
                           │     └─ 失敗（503 / 空白結果）→ 依「自動重試」設定：
-                          │           勾選＝自動重試至多 MAX_AUTO_RETRIES 次
+                          │           勾選＝等 RETRY_WAIT_SECONDS 秒後重試，
+                          │                 至多 MAX_AUTO_RETRIES 次
                           │           未勾選＝跳 dialog 詢問使用者
+                          │     └─ 重試耗盡 / 使用者放棄 → 標記該段失敗，繼續下一段
+                          │     └─ 429 配額用盡 → 中止（不再重試，繼續打只會一直撞牆）
+                          │     └─ 任何原因中止 → 都會先把已完成段落寫檔，不讓成果消失
                           └─ 刪除暫存檔
                     └─ 合併所有段落 → 輸出 _transcript.txt
+                          （失敗段落寫佔位符，不因此少一段）
+                    └─ 有失敗段落 → UI 顯示「重試失敗的 N 段」按鈕
+                          └─ 按下只補跑失敗段落，成功後原地覆寫輸出檔
 ```
 
 ## Log / 錯誤紀錄
 
-單一累積檔 `logs/app.log`（`_find_project_root()` 往上找 `launcher.ps1` 所在目錄定位專案根目錄，主程式在根目錄或 `src/` 都對），不分次建立新檔，執行期間持續累加、不自動清除。`LOG_DIR`/`LOG_FILE` 為模組層級常數，`_write_log(msg, level="INFO")` 每次開檔→寫→關檔、不持有 handle。
+單一累積檔 `logs/app.log`（`_find_project_root()` 往上找 `launcher.ps1` 所在目錄定位專案根目錄，主程式在根目錄或 `src/` 都對），不分次建立新檔，執行期間持續累加、不自動清除。`LOG_DIR`/`LOG_FILE` 為模組層級常數，`write_log(msg, level="INFO")` 每次開檔→寫→關檔、不持有 handle。
 
 落檔只有三種情況，由呼叫端顯式傳 `to_file=True` 觸發（`_log()` 預設 `to_file=False`，是刻意的 fail-closed 設計：漏帶旗標的後果是少記一行，不是把不該落檔的東西寫上磁碟）：
-1. **任務起始**（`_init_log_file` → `_write_log_header`）：唯一有完整日期的行，格式 `=== YYYY-MM-DD HH:MM:SS <task_desc> ===`
-2. **錯誤行**（`_write_log(msg, "ERROR")`）：例如轉錄中止時記 `type(e).__name__` 與 HTTP 狀態，不寫完整例外堆疊
-3. **任務結果**（`_finalize_log_file` → `_write_log`）：成功/失敗 + 耗時，level 為 `OK`/`FAIL`
+1. **任務起始**（`_init_log_file` → `write_log_header`）：唯一有完整日期的行，格式 `=== YYYY-MM-DD HH:MM:SS <task_desc> ===`
+2. **錯誤行**（`write_log(msg, "ERROR")`）：例如轉錄中止時記 `type(e).__name__` 與 HTTP 狀態，不寫完整例外堆疊
+3. **任務結果**（`_finalize_log_file` → `write_log`）：成功/失敗 + 耗時，level 為 `OK`/`FAIL`
 
 一般行格式：`[HH:MM:SS] [LEVEL] msg`（level 靠左對齊 5 字元寬）。其餘進度／中間步驟（讀取音訊、上傳、分段完成等）一律不落檔，只推 UI queue 顯示。
 
@@ -68,7 +83,14 @@ Run SnapTranscript.bat
 
 > **AI 注意（除錯用，平常不用管）：** 使用者回報「轉錄失敗」「常常出錯」等問題時，先去 `logs/app.log` 翻閱**檔尾附近**的內容（累積檔，最新記錄在最後），比只看使用者截圖更完整。平常維護、開發新功能時不需要主動查閱或提及這個目錄。
 
-## 關鍵設定變數（main.py）
+拆分為模組後，「推 UI」與「落檔」在型別上就是分開的兩件事：`job.py` 用
+`JobCallbacks.log()` 推 UI、用 `logger.write_log()` 落檔，不再需要靠
+`to_file=False` 預設值防呆。`ui.py` 的 `_log()` 退化為單純的 UI 推送包裝。
+
+段落級失敗新增一種錯誤行：`第N段 最終失敗 -> <status>`，在單段重試耗盡或
+使用者放棄重試時寫入。
+
+## 關鍵設定變數（config.py）
 
 | 變數 | 預設值 | 說明 |
 |------|--------|------|
@@ -76,6 +98,7 @@ Run SnapTranscript.bat
 | `MODEL_NAME` | `gemini-flash-latest` | Gemini 模型 |
 | `ENV_PATH` | `<專案根目錄>/.env` | API Key 儲存位置 |
 | `MAX_AUTO_RETRIES` | 5 | 勾選「自動重試」時，單段最多自動重試次數 |
+| `RETRY_WAIT_SECONDS` | 20 | 自動重試前的固定等待秒數 |
 
 ## 輸出格式
 
@@ -90,6 +113,16 @@ Run SnapTranscript.bat
 
 [逐字稿內容...]
 ```
+
+轉錄失敗的段落不會消失，改寫佔位符，段落編號與時間範圍照常：
+
+```
+=== 第 2 段（00:30:00 - 01:00:00）===
+
+[此段轉錄失敗：Gemini 伺服器回傳 503，已自動重試 5 次仍失敗，可於程式內重試]
+```
+
+按 UI 的「重試失敗的 N 段」補跑成功後，佔位符會被真實逐字稿取代，原地覆寫同一個檔案。
 
 輸出路徑：
 - **本地上傳**：與音訊檔同目錄，檔名加上 `_transcript.txt` 後綴
@@ -137,6 +170,9 @@ Run SnapTranscript.bat
 
 ### 暫存檔
 
-- 格式：`_temp_seg_0.mp3`（與音訊同副檔名）
+- 格式：`_temp_seg_<PID>_<段號>.mp3`（與音訊同副檔名，段號從 0 起算）
 - 位置：專案根目錄
 - 處理完畢自動刪除，異常退出也會在 finally 清除
+- **檔名帶 PID 是必要的**：兩個 SnapTranscript 同時跑時，若檔名只有段號會撞在一起，
+  先結束的那個程序在 finally 清檔時，會把另一個程序剛切好的暫存檔刪掉，造成假的
+  「切割失敗」，段落內容錯置的風險也一樣存在。這個情況實測重現過，不要把 PID 拿掉。

@@ -752,7 +752,6 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 import os
 import queue
-import subprocess
 import threading
 import time
 import tkinter as tk
@@ -785,6 +784,8 @@ class SnapTranscriptApp:
 ```
 
 搬完後執行 `grep -n "hms_to_seconds" ui.py`，若無輸出就從 import 清單移除 `hms_to_seconds`（它只被 `segments.py` 內部使用）。
+
+注意 `ui.py` **不需要** `import subprocess`——`main.py` 原本的 `subprocess` 只被 Task 3 搬走的音訊函式使用，`_open_output_folder` 用的是 `os.startfile`。
 
 - [ ] **Step 2: 改寫 `main.py` 為純入口**
 
@@ -1142,17 +1143,12 @@ class TranscriptionJob:
         return self._process(list(self.results))
 
     def _process(self, targets: list[SegmentResult]) -> str:
-        try:
-            for r in targets:
-                self._process_one(r)
-                self.cb.progress(
-                    self.done_count, self.total,
-                    f"{self.done_count} / {self.total} 段完成",
-                )
-        except QuotaExhausted:
-            # 配額用盡要中止，但已完成的段落先寫檔，不能整份丟掉
-            self._write_output()
-            raise
+        for r in targets:
+            self._process_one(r)
+            self.cb.progress(
+                self.done_count, self.total,
+                f"{self.done_count} / {self.total} 段完成",
+            )
         return self._write_output()
 
     def _process_one(self, r: SegmentResult):
@@ -1220,6 +1216,7 @@ class TranscriptionJob:
 
     # ---- 輸出 ----
     def _write_output(self) -> str:
+        self.cb.log("\n合併逐字稿...")
         lines = []
         for r in self.results:
             if r.text is None:
@@ -1729,6 +1726,29 @@ Expected: FAIL，`test_exhausted_retries_marks_failure_and_continues` 會因為 
                 os.remove(temp_path)
 ```
 
+- [ ] **Step 5a: 在 `_process` 加回 429 中止前寫檔**
+
+Task 6 原本的計畫把這段放在 Task 6，但那違反 Task 6「行為零改變」的約束，經裁決挪到這裡。把 `_process` 改為：
+
+```python
+    def _process(self, targets: list[SegmentResult]) -> str:
+        try:
+            for r in targets:
+                self._process_one(r)
+                self.cb.progress(
+                    self.done_count, self.total,
+                    f"{self.done_count} / {self.total} 段完成",
+                )
+        except QuotaExhausted:
+            # 配額用盡要中止，但已完成的段落先寫檔，不能整份丟掉
+            self._write_output()
+            raise
+        return self._write_output()
+```
+
+本 Task 的 `test_quota_error_still_aborts_but_saves_completed` 與
+`test_unprocessed_segment_placeholder_has_no_none` 就是在驗這個行為。
+
 - [ ] **Step 5: 改寫 `_write_output` 加入佔位符**
 
 ```python
@@ -1757,6 +1777,8 @@ Expected: FAIL，`test_exhausted_retries_marks_failure_and_continues` 會因為 
             f.write(merged)
         return self.output_path
 ```
+
+保留 `_write_output` 開頭那行 `self.cb.log("\n合併逐字稿...")`，不要在改寫時弄丟。
 
 - [ ] **Step 6: 執行測試確認通過**
 
@@ -2182,7 +2204,19 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ```markdown
 不要把重試改回「失敗立刻重打」，也不要把等待改成單次 `sleep(20)`——
-倒數迴圈是為了讓 UI 不會看起來像凍結。
+倒數迴圈是為了讓 UI 不會看起來像凍結。20 秒退避只在使用者勾選「自動重試」
+時套用，未勾選時仍走 dialog 且完全不 sleep，這點不可改。
+```
+
+同時修正「解法」那段過時的敘述——原文寫「使用者按「是」繼續、按「否」中止」，
+2026-07-31 起按「否」改為標記該段失敗後繼續下一段，不再中止整個任務。把該句改為：
+
+```markdown
+**解法：** 由 `job.TranscriptionJob` 的重試迴圈包住 `transcribe_segment` 呼叫，
+503 時 log 錯誤、依「自動重試」設定決定自動重試或跳 dialog 詢問。使用者按「否」
+或自動重試耗盡時，標記該段失敗並繼續下一段（不中止整個任務），結束後可用
+「重試失敗的 N 段」按鈕補跑。背景執行緒透過 `msg_queue + threading.Event`
+阻塞等待主執行緒的 dialog 結果。
 ```
 
 - [ ] **Step 8: 更新 `CHANGELOG.md`**
