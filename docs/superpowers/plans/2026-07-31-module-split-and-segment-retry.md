@@ -1143,17 +1143,12 @@ class TranscriptionJob:
         return self._process(list(self.results))
 
     def _process(self, targets: list[SegmentResult]) -> str:
-        try:
-            for r in targets:
-                self._process_one(r)
-                self.cb.progress(
-                    self.done_count, self.total,
-                    f"{self.done_count} / {self.total} 段完成",
-                )
-        except QuotaExhausted:
-            # 配額用盡要中止，但已完成的段落先寫檔，不能整份丟掉
-            self._write_output()
-            raise
+        for r in targets:
+            self._process_one(r)
+            self.cb.progress(
+                self.done_count, self.total,
+                f"{self.done_count} / {self.total} 段完成",
+            )
         return self._write_output()
 
     def _process_one(self, r: SegmentResult):
@@ -1221,6 +1216,7 @@ class TranscriptionJob:
 
     # ---- 輸出 ----
     def _write_output(self) -> str:
+        self.cb.log("\n合併逐字稿...")
         lines = []
         for r in self.results:
             if r.text is None:
@@ -1730,6 +1726,29 @@ Expected: FAIL，`test_exhausted_retries_marks_failure_and_continues` 會因為 
                 os.remove(temp_path)
 ```
 
+- [ ] **Step 5a: 在 `_process` 加回 429 中止前寫檔**
+
+Task 6 原本的計畫把這段放在 Task 6，但那違反 Task 6「行為零改變」的約束，經裁決挪到這裡。把 `_process` 改為：
+
+```python
+    def _process(self, targets: list[SegmentResult]) -> str:
+        try:
+            for r in targets:
+                self._process_one(r)
+                self.cb.progress(
+                    self.done_count, self.total,
+                    f"{self.done_count} / {self.total} 段完成",
+                )
+        except QuotaExhausted:
+            # 配額用盡要中止，但已完成的段落先寫檔，不能整份丟掉
+            self._write_output()
+            raise
+        return self._write_output()
+```
+
+本 Task 的 `test_quota_error_still_aborts_but_saves_completed` 與
+`test_unprocessed_segment_placeholder_has_no_none` 就是在驗這個行為。
+
 - [ ] **Step 5: 改寫 `_write_output` 加入佔位符**
 
 ```python
@@ -1758,6 +1777,8 @@ Expected: FAIL，`test_exhausted_retries_marks_failure_and_continues` 會因為 
             f.write(merged)
         return self.output_path
 ```
+
+保留 `_write_output` 開頭那行 `self.cb.log("\n合併逐字稿...")`，不要在改寫時弄丟。
 
 - [ ] **Step 6: 執行測試確認通過**
 
