@@ -285,7 +285,7 @@ class SnapTranscriptApp:
         self.range_enabled = tk.BooleanVar(value=False)
         self.range_start_var = tk.StringVar()
         self.range_end_var = tk.StringVar()
-        self.auto_retry_var = tk.BooleanVar(value=False)
+        self.auto_retry_var = tk.BooleanVar(value=True)
         self.log_start_time = 0.0
 
         self._build_ui()
