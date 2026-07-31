@@ -232,7 +232,11 @@ class SnapTranscriptApp:
         # 輸出路徑 + 開啟資料夾
         frame_output = tk.Frame(self.root)
         frame_output.grid(row=6, column=0, pady=(0, 12))
-        self.output_label = ttk.Label(frame_output, text="", foreground="gray")
+        # wraplength 220：兩顆按鈕（開啟資料夾 87 + 重試失敗的 N 段 ~100+）
+        # 同時顯示時，長路徑改換行而非把視窗撐寬，見 task-9-report.md Finding 3
+        self.output_label = ttk.Label(
+            frame_output, text="", foreground="gray", wraplength=220, justify="left"
+        )
         self.output_label.pack(side="left", padx=(0, 8))
         self.btn_open_folder = ttk.Button(
             frame_output, text="開啟資料夾", command=self._open_output_folder
