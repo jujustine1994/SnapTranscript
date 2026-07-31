@@ -12,4 +12,4 @@
 
 1. 確認 ffmpeg 已安裝：在命令列執行 `ffmpeg -version`
 2. 準備 Gemini API Key（從 Google AI Studio 取得）
-3. 雙擊 `啟動.bat` → 自動建立 venv → 輸入 API Key → 開始使用
+3. 雙擊 `Run SnapTranscript.bat` → 自動建立 venv → 輸入 API Key → 開始使用

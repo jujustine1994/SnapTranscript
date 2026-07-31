@@ -94,4 +94,4 @@ with open('launcher.ps1', 'w', encoding='utf-8-sig') as f:
 
 **解法：** 目前無法根治，只能重試。可勾選「自動重試」讓程式自動重試（上限 5 次），或維持手動 dialog 確認。若之後想降低出錯率，可考慮改用非 `-latest` 的穩定版模型號碼，但目前使用者指定維持 `gemini-flash-latest`（見上方 503 條目）。
 
-**禁止：** 不要把這個錯誤誤判為配額用盡或帳號問題去排查（那類錯誤訊息會包含 `429` / `quota` / `exhausted`，`main.py` 已有另外的判斷邏輯）。
+**禁止：** 不要把這個錯誤誤判為配額用盡或帳號問題去排查（那類錯誤訊息會包含 `429` / `quota` / `exhausted`，`transcriber.py` 的 `is_quota_error()` 已有另外的判斷邏輯）。
