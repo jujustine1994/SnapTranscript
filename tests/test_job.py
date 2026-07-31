@@ -297,5 +297,68 @@ class TestManualRetry(JobTestBase):
         self.assertIn("使用者取消重試", text)
 
 
+class TestRetryFailed(JobTestBase):
+    def test_retry_failed_replaces_placeholder(self):
+        state = {"fail_second": True}
+
+        def second_fails_first_round(path, client):
+            if "_temp_seg_1" in path and state["fail_second"]:
+                raise Exception("503 UNAVAILABLE")
+            return "補跑成功內容" if "_temp_seg_1" in path else "第一段內容"
+
+        j = self.make_job(second_fails_first_round)
+        output_path = j.run()
+        self.assertEqual(j.failed_count, 1)
+        self.assertIn("[此段轉錄失敗：", self.read_output(output_path))
+
+        state["fail_second"] = False
+        j.retry_failed()
+
+        self.assertEqual(j.failed_count, 0)
+        text = self.read_output(output_path)
+        self.assertNotIn("[此段轉錄失敗：", text)
+        self.assertIn("補跑成功內容", text)
+        self.assertIn("第一段內容", text)
+
+    def test_retry_failed_only_touches_failed_segments(self):
+        state = {"fail_second": True, "calls": []}
+
+        def tracker(path, client):
+            state["calls"].append(os.path.basename(path))
+            if "_temp_seg_1" in path and state["fail_second"]:
+                raise Exception("503 UNAVAILABLE")
+            return "內容"
+
+        j = self.make_job(tracker)
+        j.run()
+        state["fail_second"] = False
+        state["calls"].clear()
+        j.retry_failed()
+
+        # 補跑只碰第 2 段，第 1 段不該被重打
+        self.assertTrue(all("_temp_seg_1" in name for name in state["calls"]))
+
+    def test_retry_failed_can_fail_again(self):
+        def always_fails_second(path, client):
+            if "_temp_seg_1" in path:
+                raise Exception("503 UNAVAILABLE")
+            return "第一段內容"
+
+        j = self.make_job(always_fails_second)
+        j.run()
+        self.assertEqual(j.failed_count, 1)
+
+        output_path = j.retry_failed()
+        self.assertEqual(j.failed_count, 1)
+        self.assertIn("[此段轉錄失敗：", self.read_output(output_path))
+
+    def test_retry_failed_with_nothing_failed_is_noop(self):
+        j = self.make_job(lambda path, client: "內容")
+        j.run()
+        output_path = j.retry_failed()
+        self.assertEqual(j.failed_count, 0)
+        self.assertEqual(self.read_output(output_path).count("內容"), 2)
+
+
 if __name__ == "__main__":
     unittest.main()

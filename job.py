@@ -82,6 +82,14 @@ class TranscriptionJob:
         """跑全部段落，回傳輸出檔路徑。"""
         return self._process(list(self.results))
 
+    def retry_failed(self) -> str:
+        """只重跑失敗的段落，成功則原地覆寫同一個輸出檔。
+
+        音訊從原始檔重新切割，不保留暫存檔——暫存檔可能數百 MB，
+        留在專案目錄很髒，而重切一段 30 分鐘音訊只需數秒。
+        """
+        return self._process([r for r in self.results if r.text is None])
+
     def _process(self, targets: list[SegmentResult]) -> str:
         try:
             for r in targets:

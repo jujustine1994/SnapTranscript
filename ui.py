@@ -238,6 +238,10 @@ class SnapTranscriptApp:
             frame_output, text="開啟資料夾", command=self._open_output_folder
         )
         # 預設隱藏，完成後才顯示
+        self.btn_retry_failed = ttk.Button(
+            frame_output, text="重試失敗的段落", command=self._retry_failed
+        )
+        # 預設隱藏，有失敗段落時才顯示
 
         # 初始引導文字
         self.log_text.config(state="normal")
@@ -343,6 +347,47 @@ class SnapTranscriptApp:
         if folder and os.path.exists(folder):
             os.startfile(folder)
 
+    def _retry_failed(self):
+        """只補跑失敗的段落（背景執行緒）。"""
+        if self._job is None or self._job.failed_count == 0:
+            return
+        if not os.path.exists(self._job.audio_path):
+            messagebox.showerror(
+                "找不到音訊檔",
+                f"原始音訊已不存在，無法補跑：\n{self._job.audio_path}",
+            )
+            return
+
+        self.is_running = True
+        self.btn_start.config(state="disabled")
+        self.btn_retry_failed.pack_forget()
+        self._log(f"\n開始補跑 {self._job.failed_count} 個失敗段落...")
+
+        t = threading.Thread(target=self._retry_worker, daemon=True)
+        t.start()
+
+    def _retry_worker(self):
+        """背景執行緒：只跑失敗段落，成功後重新合併覆寫輸出檔。"""
+        self.log_start_time = time.time()
+        try:
+            write_log_header(
+                f"補跑 {os.path.basename(self._job.audio_path)} | {MODEL_NAME} | "
+                f"{self._job.failed_count}段"
+            )
+            output_path = self._job.retry_failed()
+            self._log(f"\n逐字稿已更新：{output_path}")
+            self._finalize_log_file(success=self._job.failed_count == 0)
+            self._done(output_path, success=True, failed_count=self._job.failed_count)
+        except job.QuotaExhausted as e:
+            self._log(f"\n[ERROR] {e}")
+            self._finalize_log_file(success=False)
+            self._done("", success=False, failed_count=self._job.failed_count)
+        except Exception as e:
+            self._log(f"\n[ERROR] {e}")
+            write_log(f"補跑中止 -> {type(e).__name__}", "ERROR")
+            self._finalize_log_file(success=False)
+            self._done("", success=False, failed_count=self._job.failed_count)
+
     def _select_save_path(self):
         path = filedialog.asksaveasfilename(
             title="選擇儲存位置與檔名",
@@ -430,6 +475,7 @@ class SnapTranscriptApp:
         self.log_text.config(state="disabled")
         self.output_label.config(text="")
         self.btn_open_folder.pack_forget()
+        self.btn_retry_failed.pack_forget()
         self.progress_bar["value"] = 0
         self.progress_label.config(text="準備中...")
         self.is_running = True
@@ -534,8 +580,8 @@ class SnapTranscriptApp:
             output_path = self._job.run()
 
             self._log(f"\n逐字稿已儲存：{output_path}")
-            self._finalize_log_file(success=True)
-            self._done(output_path, success=True)
+            self._finalize_log_file(success=self._job.failed_count == 0)
+            self._done(output_path, success=True, failed_count=self._job.failed_count)
 
         except job.QuotaExhausted as e:
             self._log(f"\n[ERROR] {e}")
@@ -575,8 +621,9 @@ class SnapTranscriptApp:
     def _set_progress(self, current: int, total: int, label: str):
         self.msg_queue.put(("progress", (current, total, label)))
 
-    def _done(self, output_path: str, success: bool, download_only: bool = False):
-        self.msg_queue.put(("done", (output_path, success, download_only)))
+    def _done(self, output_path: str, success: bool, download_only: bool = False,
+              failed_count: int = 0):
+        self.msg_queue.put(("done", (output_path, success, download_only, failed_count)))
 
     def _poll_queue(self):
         """每 100ms 從 queue 拉訊息更新 UI（主執行緒安全）"""
@@ -598,7 +645,7 @@ class SnapTranscriptApp:
                     reply_holder[0] = messagebox.askyesno("503 伺服器錯誤", question)
                     reply_event.set()
                 elif msg_type == "done":
-                    output_path, success, download_only = data
+                    output_path, success, download_only, failed_count = data
                     self.is_running = False
                     self.btn_start.config(state="normal")
                     if success:
@@ -609,13 +656,36 @@ class SnapTranscriptApp:
                                 text=f"已下載：{output_path}", foreground="green"
                             )
                             messagebox.showinfo("下載完成", f"音訊已儲存至：\n{output_path}")
+                        elif failed_count > 0:
+                            total = self._job.total
+                            ok = total - failed_count
+                            self.output_label.config(
+                                text=f"輸出：{output_path}（{ok}/{total} 段成功）",
+                                foreground="#b8860b",
+                            )
+                            self.btn_retry_failed.config(
+                                text=f"重試失敗的 {failed_count} 段"
+                            )
+                            self.btn_retry_failed.pack(side="left", padx=(6, 0))
+                            messagebox.showwarning(
+                                "部分完成",
+                                f"逐字稿已儲存（{ok}/{total} 段成功，{failed_count} 段失敗）：\n"
+                                f"{output_path}\n\n"
+                                "失敗段落在檔案中標記為佔位符，可按「重試失敗的段落」補跑。",
+                            )
                         else:
+                            self.btn_retry_failed.pack_forget()
                             self.output_label.config(
                                 text=f"輸出：{output_path}", foreground="green"
                             )
                             messagebox.showinfo("完成", f"逐字稿已儲存：\n{output_path}")
                     else:
                         self.progress_label.config(text="發生錯誤，請查看上方記錄")
+                        if failed_count > 0:
+                            self.btn_retry_failed.config(
+                                text=f"重試失敗的 {failed_count} 段"
+                            )
+                            self.btn_retry_failed.pack(side="left", padx=(6, 0))
         except queue.Empty:
             pass
         self.root.after(100, self._poll_queue)
