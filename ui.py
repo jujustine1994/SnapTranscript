@@ -458,14 +458,10 @@ class SnapTranscriptApp:
             self._finalize_log_file(success=self._job.failed_count == 0)
             self._done(output_path, success=True, failed_count=self._job.failed_count)
         except job.QuotaExhausted as e:
-            self._log(f"\n[ERROR] {e}")
-            self._finalize_log_file(success=False)
-            self._done(self._job.output_path, success=False, failed_count=self._job.failed_count)
+            # 不落檔：job.py 拋出前已經記過一行 429
+            self._abort(e, log_label=None)
         except Exception as e:
-            self._log(f"\n[ERROR] {e}")
-            write_log(f"補跑中止 -> {type(e).__name__}", "ERROR")
-            self._finalize_log_file(success=False)
-            self._done(self._job.output_path, success=False, failed_count=self._job.failed_count)
+            self._abort(e, log_label="補跑中止")
 
     def _select_save_path(self):
         path = filedialog.asksaveasfilename(
@@ -592,62 +588,19 @@ class SnapTranscriptApp:
         auto_retry: bool = False,
         min_segment_seconds: int = MIN_SEGMENT_SECONDS,
     ):
-        """背景執行緒：（下載）+ 切割 + 上傳 + 轉錄 + 合併"""
+        """背景執行緒：（下載）+ 切割 + 上傳 + 轉錄 + 合併。
+
+        只負責串流程與收尾，每個步驟的細節在各自的方法裡。
+        """
         self.log_start_time = time.time()
         try:
-            if source_info["mode"] == "youtube":
-                self._log("正在下載 YouTube 音訊，請稍候...")
+            audio_path = self._resolve_audio_source(source_info)
+            if audio_path is None:
+                return   # 「只下載」模式已在 _resolve_audio_source 收尾
 
-                def _dl_progress(downloaded, total, speed):
-                    speed_str = f"  {speed}" if speed else ""
-                    if total > 0:
-                        pct = int(downloaded / total * 100)
-                        mb_done = downloaded / 1024 / 1024
-                        mb_total = total / 1024 / 1024
-                        self._set_progress(
-                            pct, 100,
-                            f"下載中... {pct}%  ({mb_done:.1f} / {mb_total:.1f} MB{speed_str})"
-                        )
-                    else:
-                        mb = downloaded / 1024 / 1024
-                        self._set_progress(0, 100, f"下載中... {mb:.1f} MB{speed_str}")
-
-                audio_path, _ = download_youtube_audio(
-                    source_info["url"], source_info["save_path"],
-                    progress_callback=_dl_progress,
-                )
-                self._log(f"下載完成：{os.path.basename(audio_path)}")
-                if source_info["action"] == "download_only":
-                    # 只下載：任務起始行只記檔名，不記完整 URL
-                    write_log_header(f"下載 {os.path.basename(audio_path)} | youtube")
-                    self._finalize_log_file(success=True)
-                    self._done(audio_path, success=True, download_only=True)
-                    return
-            else:
-                audio_path = source_info["path"]
-
-            self._log(f"讀取音訊：{os.path.basename(audio_path)}")
-            total_duration = get_audio_duration(audio_path)
-            self._log(f"總時長：{seconds_to_hms(total_duration)}")
-
-            # 建立分段清單（自動切點與範圍夾擠的邏輯在 segments.plan_segments，
-            # 放在那裡才測得到，見 segments.py 的說明）
-            segment_list, range_start, range_end = plan_segments(
-                total_duration, cut_points, range_bounds,
-                min_segment_seconds=min_segment_seconds,
+            segment_list = self._plan_and_announce(
+                audio_path, cut_points, range_bounds, min_segment_seconds, auto_retry
             )
-            if range_bounds is not None:
-                self._log(
-                    f"擷取範圍：{seconds_to_hms(range_start)} → {seconds_to_hms(range_end)}"
-                )
-
-            # 任務起始行：檔名 + 模型 + 段數 + 重試設定，全塞同一行（不記 URL）
-            write_log_header(
-                f"轉錄 {os.path.basename(audio_path)} | {MODEL_NAME} | "
-                f"{len(segment_list)}段 | 自動重試:{'開' if auto_retry else '關'}"
-            )
-            self._log(f"共 {len(segment_list)} 段，開始處理...")
-            self._set_progress(0, len(segment_list), f"0 / {len(segment_list)} 段完成")
 
             self._job = job.TranscriptionJob(
                 audio_path=audio_path,
@@ -667,16 +620,101 @@ class SnapTranscriptApp:
             self._done(output_path, success=True, failed_count=self._job.failed_count)
 
         except job.QuotaExhausted as e:
-            self._log(f"\n[ERROR] {e}")
-            self._finalize_log_file(success=False)
-            self._done(self._job.output_path if self._job else "", success=False,
-                       failed_count=self._job.failed_count if self._job else 0)
+            # 不落檔：job.py 拋出前已經記過一行 429，這裡再記會變成同一件事兩行
+            self._abort(e, log_label=None)
         except Exception as e:
-            self._log(f"\n[ERROR] {e}")
-            write_log(f"轉錄中止 -> {type(e).__name__}", "ERROR")
-            self._finalize_log_file(success=False)
-            self._done(self._job.output_path if self._job else "", success=False,
-                       failed_count=self._job.failed_count if self._job else 0)
+            self._abort(e, log_label="轉錄中止")
+
+    # ---- _worker 的步驟 ----
+    def _resolve_audio_source(self, source_info: dict) -> str | None:
+        """取得要轉錄的音訊路徑（YouTube 模式會先下載）。
+
+        回傳 `None` 代表「只下載音訊」模式已經完成並收尾，呼叫端直接結束即可。
+        """
+        if source_info["mode"] != "youtube":
+            return source_info["path"]
+
+        self._log("正在下載 YouTube 音訊，請稍候...")
+        audio_path, _ = download_youtube_audio(
+            source_info["url"], source_info["save_path"],
+            progress_callback=self._download_progress,
+        )
+        self._log(f"下載完成：{os.path.basename(audio_path)}")
+
+        if source_info["action"] == "download_only":
+            # 只下載：任務起始行只記檔名，不記完整 URL
+            write_log_header(f"下載 {os.path.basename(audio_path)} | youtube")
+            self._finalize_log_file(success=True)
+            self._done(audio_path, success=True, download_only=True)
+            return None
+        return audio_path
+
+    def _download_progress(self, downloaded: int, total: int, speed: str):
+        """yt-dlp 的進度 hook（從 yt-dlp 的執行緒呼叫，只推 queue 不碰 widget）。"""
+        speed_str = f"  {speed}" if speed else ""
+        if total > 0:
+            pct = int(downloaded / total * 100)
+            mb_done = downloaded / 1024 / 1024
+            mb_total = total / 1024 / 1024
+            self._set_progress(
+                pct, 100,
+                f"下載中... {pct}%  ({mb_done:.1f} / {mb_total:.1f} MB{speed_str})",
+            )
+        else:
+            # 沒有 total 的串流：只顯示已下載量，進度條停在 0
+            mb = downloaded / 1024 / 1024
+            self._set_progress(0, 100, f"下載中... {mb:.1f} MB{speed_str}")
+
+    def _plan_and_announce(
+        self,
+        audio_path: str,
+        cut_points: list[int] | None,
+        range_bounds: tuple[int, int] | None,
+        min_segment_seconds: int,
+        auto_retry: bool,
+    ) -> list[tuple[int, int]]:
+        """讀時長、算分段、寫任務起始行，回傳分段清單。"""
+        self._log(f"讀取音訊：{os.path.basename(audio_path)}")
+        total_duration = get_audio_duration(audio_path)
+        self._log(f"總時長：{seconds_to_hms(total_duration)}")
+
+        # 自動切點與範圍夾擠的邏輯在 segments.plan_segments，放在那裡才測得到
+        segment_list, range_start, range_end = plan_segments(
+            total_duration, cut_points, range_bounds,
+            min_segment_seconds=min_segment_seconds,
+        )
+        if range_bounds is not None:
+            self._log(
+                f"擷取範圍：{seconds_to_hms(range_start)} → {seconds_to_hms(range_end)}"
+            )
+
+        # 任務起始行：檔名 + 模型 + 段數 + 重試設定，全塞同一行（不記 URL）
+        write_log_header(
+            f"轉錄 {os.path.basename(audio_path)} | {MODEL_NAME} | "
+            f"{len(segment_list)}段 | 自動重試:{'開' if auto_retry else '關'}"
+        )
+        self._log(f"共 {len(segment_list)} 段，開始處理...")
+        self._set_progress(0, len(segment_list), f"0 / {len(segment_list)} 段完成")
+        return segment_list
+
+    def _abort(self, e: Exception, log_label: str | None):
+        """任務中止的共同收尾（轉錄與補跑都走這裡）。
+
+        `log_label=None` 代表這個錯誤已經在別處落檔過，不要再記一次。
+        落檔只記例外類型，不帶訊息全文（見 ARCHITECTURE.md 落檔紀律）。
+
+        `self._job` 可能還是 None——前置步驟（下載、讀時長、分段）失敗時
+        job 還沒建立，此時沒有輸出檔也沒有失敗段數。
+        """
+        self._log(f"\n[ERROR] {e}")
+        if log_label is not None:
+            write_log(f"{log_label} -> {type(e).__name__}", "ERROR")
+        self._finalize_log_file(success=False)
+        self._done(
+            self._job.output_path if self._job else "",
+            success=False,
+            failed_count=self._job.failed_count if self._job else 0,
+        )
 
     # ---- 執行紀錄（累積寫入 logs/app.log，供除錯查閱） ----
     def _finalize_log_file(self, success: bool):

@@ -92,8 +92,8 @@ uv pip install --upgrade yt-dlp --python venv\Scripts\python.exe
 
 ## 可以做但不急
 
-- `ui.py` 的 `_worker` 仍然偏長（下載、分段、建立 job、三個 except 分支都在裡面）。
-  分段那塊已經抽走了，剩下的要再拆得先想清楚 UI 狀態怎麼傳，暫時不動。
+- ~~`ui.py` 的 `_worker` 偏長~~ — 2026-08-02 拆成 `_resolve_audio_source` /
+  `_download_progress` / `_plan_and_announce` / `_abort`，`_worker` 從 94 行降到 45 行
 - ~~`audio.py` 的 `get_audio_duration` 沒有處理 ffprobe 失敗~~ — 2026-08-01 修好了
 - ~~關視窗時 `_poll_queue` 的 `after` 回呼會噴 `invalid command name`~~ —
   2026-08-01 隨關窗處理一起修（`_on_close` 會 `after_cancel`）
