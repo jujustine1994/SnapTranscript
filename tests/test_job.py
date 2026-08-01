@@ -490,6 +490,60 @@ class TestCutFailure(JobTestBase):
         self.assertIn("切割失敗", text)
 
 
+class TestFailureCounts(JobTestBase):
+    """failed_count 要能分辨「試過但失敗」與「根本沒輪到跑」。
+
+    429 中止時後面的段落連跑都沒跑，全部算成「失敗 N 段」會誤導使用者。
+    """
+
+    def test_all_failures_are_attempted(self):
+        def always_503(path, client):
+            raise Exception("503 UNAVAILABLE")
+
+        j = self.make_job(always_503)
+        j.run()
+        self.assertEqual(j.failed_count, 2)
+        self.assertEqual(j.attempted_failed_count, 2)
+        self.assertEqual(j.pending_count, 0)
+
+    def test_quota_abort_leaves_untouched_segments_pending(self):
+        def first_ok_then_quota(path, client):
+            if _is_segment(path, 0):
+                return "第一段內容"
+            raise Exception("429 RESOURCE_EXHAUSTED")
+
+        j = self.make_job(
+            first_ok_then_quota,
+            segment_list=[(0, 1800), (1800, 3600), (3600, 5400)],
+        )
+        with self.assertRaises(job.QuotaExhausted):
+            j.run()
+
+        # 第2段觸發 429 中止但沒被標記失敗，第3段根本沒輪到 → 兩段都是 pending
+        self.assertEqual(j.failed_count, 2)
+        self.assertEqual(j.attempted_failed_count, 0)
+        self.assertEqual(j.pending_count, 2)
+
+    def test_mixed_failed_and_pending(self):
+        def second_fails_third_quota(path, client):
+            if _is_segment(path, 1):
+                raise Exception("503 UNAVAILABLE")
+            if _is_segment(path, 2):
+                raise Exception("429 RESOURCE_EXHAUSTED")
+            return "內容"
+
+        j = self.make_job(
+            second_fails_third_quota,
+            segment_list=[(0, 1800), (1800, 3600), (3600, 5400), (5400, 7200)],
+        )
+        with self.assertRaises(job.QuotaExhausted):
+            j.run()
+
+        self.assertEqual(j.attempted_failed_count, 1)   # 第2段重試耗盡
+        self.assertEqual(j.pending_count, 2)            # 第3段中止 + 第4段沒輪到
+        self.assertEqual(j.failed_count, 3)
+
+
 class TestTempFileIsolation(JobTestBase):
     """暫存檔名必須帶 PID，否則兩個 SnapTranscript 同時跑會互相刪檔。
 

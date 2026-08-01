@@ -79,7 +79,22 @@ class TranscriptionJob:
 
     @property
     def failed_count(self) -> int:
+        """尚未成功的段落數（補跑要處理的就是這些）。
+
+        包含兩種：真的試過但失敗的，以及根本還沒輪到跑的（例如前一段觸發
+        429 中止）。要分辨用 attempted_failed_count / pending_count。
+        """
         return sum(1 for r in self.results if r.text is None)
+
+    @property
+    def attempted_failed_count(self) -> int:
+        """試過但失敗的段落數（r.error 有值才算）。"""
+        return sum(1 for r in self.results if r.text is None and r.error is not None)
+
+    @property
+    def pending_count(self) -> int:
+        """根本沒輪到跑的段落數（任務中途中止時才會有）。"""
+        return sum(1 for r in self.results if r.text is None and r.error is None)
 
     # ---- 主流程 ----
     def run(self) -> str:

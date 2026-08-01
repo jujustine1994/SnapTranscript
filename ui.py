@@ -351,6 +351,32 @@ class SnapTranscriptApp:
         if folder and os.path.exists(folder):
             os.startfile(folder)
 
+    def _retry_button_text(self) -> str:
+        """補跑按鈕的文字。
+
+        「失敗」與「未完成」是兩件事：重試耗盡的段落確實失敗過，但任務中途
+        中止（例如 429 配額用盡）時，後面的段落根本沒輪到跑。全都寫成
+        「重試失敗的 N 段」會讓使用者以為錯了 N 次。
+        """
+        if self._job is None:
+            return "重試失敗的段落"
+        n = self._job.failed_count
+        if self._job.pending_count > 0:
+            return f"繼續未完成的 {n} 段"
+        return f"重試失敗的 {n} 段"
+
+    def _unfinished_wording(self) -> str:
+        """「部分完成」對話框裡描述未完成段落的措辭。"""
+        if self._job is None:
+            return "部分段落未完成"
+        failed, pending = self._job.attempted_failed_count, self._job.pending_count
+        parts = []
+        if failed:
+            parts.append(f"{failed} 段失敗")
+        if pending:
+            parts.append(f"{pending} 段未處理")
+        return "、".join(parts) or "部分段落未完成"
+
     def _retry_failed(self):
         """只補跑失敗的段落（背景執行緒）。"""
         if self._job is None or self._job.failed_count == 0:
@@ -652,7 +678,9 @@ class SnapTranscriptApp:
                     self.progress_label.config(text=label)
                 elif msg_type == "ask":
                     question, reply_event, reply_holder = data
-                    reply_holder[0] = messagebox.askyesno("503 伺服器錯誤", question)
+                    # 標題保持中性：這個 dialog 不只用於 503，Gemini 回傳空白結果
+                    # 也走同一條路。實際原因寫在 question 裡。
+                    reply_holder[0] = messagebox.askyesno("轉錄失敗", question)
                     reply_event.set()
                 elif msg_type == "done":
                     output_path, success, download_only, failed_count = data
@@ -673,15 +701,15 @@ class SnapTranscriptApp:
                                 text=f"輸出：{output_path}（{ok}/{total} 段成功）",
                                 foreground="#b8860b",
                             )
-                            self.btn_retry_failed.config(
-                                text=f"重試失敗的 {failed_count} 段"
-                            )
+                            self.btn_retry_failed.config(text=self._retry_button_text())
                             self.btn_retry_failed.pack(side="left", padx=(6, 0))
                             messagebox.showwarning(
                                 "部分完成",
-                                f"逐字稿已儲存（{ok}/{total} 段成功，{failed_count} 段失敗）：\n"
+                                f"逐字稿已儲存（{ok}/{total} 段成功，"
+                                f"{self._unfinished_wording()}）：\n"
                                 f"{output_path}\n\n"
-                                "失敗段落在檔案中標記為佔位符，可按「重試失敗的段落」補跑。",
+                                "未完成的段落在檔案中標記為佔位符，"
+                                f"可按「{self._retry_button_text()}」補跑。",
                             )
                         else:
                             self.btn_retry_failed.pack_forget()
@@ -701,9 +729,7 @@ class SnapTranscriptApp:
                                 foreground="#b8860b",
                             )
                         if failed_count > 0:
-                            self.btn_retry_failed.config(
-                                text=f"重試失敗的 {failed_count} 段"
-                            )
+                            self.btn_retry_failed.config(text=self._retry_button_text())
                             self.btn_retry_failed.pack(side="left", padx=(6, 0))
         except queue.Empty:
             pass
