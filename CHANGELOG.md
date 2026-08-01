@@ -36,7 +36,10 @@
 - 修正：`_write_output` 寫檔失敗（磁碟滿、權限、路徑消失）時 `.tmp` 檔會留在使用者的音訊資料夾裡；改為失敗時清除後再拋出原始錯誤
 - 重構：`segments.py` 兩份重複的 HH:MM:SS 正規表示式合併為模組常數 `TIME_PATTERN`
 - 重構：Gemini 檔案輪詢間隔（原本寫死 2 秒）拉成 `config.FILE_UPLOAD_POLL_SECONDS`；`transcribe_segment` 新增 `sleep_fn` 測試注入點
-- 測試：從 50 個增加到 87 個
+- 修正：`get_audio_duration` 失敗時的錯誤訊息完全看不懂。音訊檔被刪除／隨身碟拔掉／選到壞檔時，使用者看到的是 `could not convert string to float: b'xxx.mp3: No such file or directory'`；改為分三種情況給明確訊息（找不到檔案／不是有效音訊／找不到 ffprobe）。同時 `stderr` 不再併進 `stdout`——原本 ffprobe 的錯誤訊息會混進要解析的數字裡
+- 修正：`cut_audio_segment` 兩次嘗試都失敗時清掉殘檔。ffmpeg 失敗仍可能留下 0 byte 或半截的檔案，留著會讓 `job` 的存在性檢查誤判切割成功，接著把壞掉的音訊上傳給 Gemini
+- 新增：`tests/test_audio.py`（9 個測試，用 mock 取代 `subprocess.run`，仍不需要 ffmpeg）
+- 測試：從 50 個增加到 96 個
 - 實測：2.5 小時 mp3（137 MB）跑完 5 段真實 ffmpeg 切割，記憶體全程穩定在 88 MB 無漂移，暫存檔每段 27.5 MB 且用完即刪、無殘留，切割總耗時 1.5 秒。轉錄用假函式，未花 API 額度
 - 實測：UI 層在重構後仍走得通 — 2 小時 45 分自動切 6 段、擷取範圍 00:20:00→01:35:00 切 3 段，兩條路徑輸出檔內容與段落標題皆正確
 - 實測：尾巴合併欄位四個情境（2:33:00 音訊）— 填 5 切 5 段（末段 33 分）、填 0 切 6 段（末段 3 分）、填 30 擋下並跳格式錯誤、切到自訂切割點時欄位變灰且不做合併。視窗寬度未因新欄位變寬（461px 不變）

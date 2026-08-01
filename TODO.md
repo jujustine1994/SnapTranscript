@@ -45,8 +45,7 @@
 
 - `ui.py` 的 `_worker` 仍然偏長（下載、分段、建立 job、三個 except 分支都在裡面）。
   分段那塊已經抽走了，剩下的要再拆得先想清楚 UI 狀態怎麼傳，暫時不動。
-- `audio.py` 的 `get_audio_duration` 沒有處理 ffprobe 失敗（回傳空字串會讓
-  `float()` 拋 ValueError，訊息對使用者沒有意義）。目前實務上沒踩到。
+- ~~`audio.py` 的 `get_audio_duration` 沒有處理 ffprobe 失敗~~ — 2026-08-01 修好了
 - 關視窗時 `_poll_queue` 還掛著一個 `root.after(100, ...)`，Tk 可能在關閉瞬間
   印出 `invalid command name ..._poll_queue`。實測只在同一個行程建立多個 Tk root
   時看得到（測試腳本），正常使用是單一 root 且緊接著行程結束，沒有實際影響。

@@ -7,19 +7,51 @@ import yt_dlp
 
 
 def get_audio_duration(audio_path: str) -> float:
-    """用 ffprobe 取得音訊總時長（秒）"""
+    """用 ffprobe 取得音訊總時長（秒）。
+
+    失敗時拋出訊息看得懂的例外。原本直接 `float(result.stdout)`，ffprobe 一失敗
+    使用者看到的是 `could not convert string to float: b'xxx.mp3: No such file
+    or directory'`——完全看不出要做什麼。而且原本把 stderr 併進 stdout
+    （`stderr=subprocess.STDOUT`），錯誤訊息會混進要解析的數字裡。
+    """
+    if not os.path.exists(audio_path):
+        raise FileNotFoundError(
+            f"找不到音訊檔案：{audio_path}\n"
+            "檔案可能已被移動、刪除，或所在的隨身碟／網路磁碟已中斷。"
+        )
+
     cmd = [
         "ffprobe", "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
         audio_path,
     ]
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    return float(result.stdout.strip())
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except FileNotFoundError:
+        raise RuntimeError(
+            "找不到 ffprobe（ffmpeg 的一部分）。請確認 ffmpeg 已安裝並加入系統 PATH，"
+            "在命令列執行 `ffmpeg -version` 可以驗證。"
+        ) from None
+
+    raw = result.stdout.strip()
+    try:
+        return float(raw)
+    except ValueError:
+        raise RuntimeError(
+            f"無法讀取音訊長度：{os.path.basename(audio_path)}\n"
+            "這個檔案可能不是有效的音訊／影片檔，或檔案已損毀。"
+        ) from None
 
 
 def cut_audio_segment(audio_path: str, start_sec: int, duration_sec: int, output_path: str):
-    """用 ffmpeg 切割指定時段，優先 copy codec，失敗再重新編碼"""
+    """用 ffmpeg 切割指定時段，優先 copy codec，失敗再重新編碼。
+
+    不拋例外：呼叫端（`job._process_one`）靠「輸出檔存不存在」判斷成敗，
+    這樣單段切割失敗只會標記該段，不會中止整個任務。所以兩次都失敗時
+    必須把殘檔刪掉——ffmpeg 失敗仍可能留下 0 byte 或半截的檔案，
+    留著會讓存在性檢查誤判成功，接著把壞掉的音訊上傳給 Gemini。
+    """
     base_cmd = ["ffmpeg", "-ss", str(start_sec), "-t", str(duration_sec), "-i", audio_path]
 
     # 嘗試 copy（速度快，不重新編碼）
@@ -29,10 +61,16 @@ def cut_audio_segment(audio_path: str, start_sec: int, duration_sec: int, output
     )
     if result.returncode != 0:
         # 回退：重新編碼為 mp3
-        subprocess.run(
+        result = subprocess.run(
             base_cmd + ["-acodec", "libmp3lame", "-y", output_path],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+
+    if result.returncode != 0 and os.path.exists(output_path):
+        try:
+            os.remove(output_path)
+        except OSError:
+            pass
 
 
 def download_youtube_audio(url: str, save_path: str, progress_callback=None) -> tuple[str, str]:
