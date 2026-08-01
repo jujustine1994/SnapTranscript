@@ -95,3 +95,23 @@ with open('launcher.ps1', 'w', encoding='utf-8-sig') as f:
 **解法：** 目前無法根治，只能重試。可勾選「自動重試」讓程式自動重試（上限 5 次），或維持手動 dialog 確認。若之後想降低出錯率，可考慮改用非 `-latest` 的穩定版模型號碼，但目前使用者指定維持 `gemini-flash-latest`（見上方 503 條目）。
 
 **禁止：** 不要把這個錯誤誤判為配額用盡或帳號問題去排查（那類錯誤訊息會包含 `429` / `quota` / `exhausted`，`transcriber.py` 的 `is_quota_error()` 已有另外的判斷邏輯）。
+
+---
+
+## YouTube 下載突然失敗：yt-dlp 太舊
+
+**問題：** 本來能用的 YouTube 下載開始失敗（抓不到格式、解析錯誤、HTTP 403 等）。同一支影片用瀏覽器開得起來，程式就是下載不了。
+
+**原因：** `launcher.ps1` 每次啟動跑的 `uv pip install -r requirements.txt` **沒有 `--upgrade`**，而 `requirements.txt` 裡的 `yt-dlp` 沒有指定版本——這個組合的實際效果是「已經裝好就不動它」，所以 yt-dlp 會永遠停在第一次安裝的版本。
+
+YouTube 三天兩頭改前端，yt-dlp 靠頻繁發版追上（PyPI 上有 600 多個版本）。停在舊版遲早會下載失敗。2026-08-02 檢查時，專案裝的是 2026.3.13，PyPI 最新是 2026.7.4，已經差四個月。
+
+**解法：** 手動升級 yt-dlp，不必動 `requirements.txt`：
+
+```powershell
+uv pip install --upgrade yt-dlp --python venv\Scripts\python.exe
+```
+
+**禁止：** 不要為了「保險」把 `yt-dlp` 在 `requirements.txt` 裡鎖版本——鎖死等於保證這個問題一定會發生，而且再也修不好。這是少數「不鎖比較安全」的套件。
+
+> 順帶一提：同樣的機制代表 `google-genai` 也不會被自動升級，所以不需要鎖版本防它。詳細調查見 `TODO.md`。

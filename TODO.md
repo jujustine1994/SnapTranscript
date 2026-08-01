@@ -41,41 +41,54 @@
 分頁，把設定存進 `.env` 或新的 settings 檔。當時選了「只加單一欄位」的最小做法，
 因為只有尾巴門檻這一項使用者會想常態調整。
 
-## requirements.txt 鎖版本（2026-08-01 決定要做，不急）
+## requirements.txt 鎖版本 —— 2026-08-02 調查後決定「不做」
 
-**問題：** `google-genai` 與 `yt-dlp` 都沒鎖版本。`launcher.ps1` 每次啟動都跑
-`uv pip install -r requirements.txt`，套件出破壞性改版時，下次重建 venv
-程式就開不起來——而且會發生在你要用的時候，不是你想維護的時候。
+原本 08-01 判斷要鎖，理由是「每次啟動都跑 `uv pip install -r`，套件改版會把
+程式弄壞」。**這個前提經實測是錯的，所以整件事取消。**
 
-**目前實裝版本（2026-08-01）：**
+### 實測證據
 
-| 套件 | 版本 | 建議做法 |
-|------|------|----------|
-| `google-genai` | 1.66.0 | **鎖** `>=1.66,<2` |
-| `python-dotenv` | 1.2.2 | 已鎖死 `==1.2.2`，建議放寬成 `>=1.2,<2` |
-| `yt-dlp` | 2026.3.13 | **不要鎖** |
+**1. `uv pip install -r` 不會升級已安裝的套件。**
+建乾淨 venv → 裝 `python-dotenv==1.0.0` → 用未鎖版本的 requirements 跑
+`uv pip install -r`（跟 `launcher.ps1` 一模一樣，沒有 `--upgrade`）→
+版本仍是 1.0.0。所以日常啟動完全不會動到已裝好的版本，「哪天啟動就壞掉」
+不會發生。
 
-**為何 `yt-dlp` 不鎖：** YouTube 三天兩頭改前端，yt-dlp 靠頻繁發版追上。
-鎖死等於保證下載功能過幾個月就壞掉。這是少數「不鎖比較安全」的套件。
+**2. 唯一會變版本的時機是「從零重建 venv」**，也就是換機器、手動刪掉 `venv/`，
+或 PITFALLS 那條 dist-info 損壞的清理路徑。
 
-**為何 `google-genai` 只鎖大版本：** 它遵循 semver，`<2` 擋掉破壞性改版，
-`>=1.66` 保證有目前用到的 API（`client.files.upload` / `client.models.generate_content`）。
-小版本更新照樣拿得到，不用手動追。
+**3. 真的重建的話，會裝到 `google-genai` 2.16.0（現在裝的是 1.66.0）。**
+主版本 2.x 已經發行。針對這點實際驗過相容性：
 
-**做法：**
+| 檢查項目 | 結果 |
+|----------|------|
+| `genai.Client(api_key=)` | 在 |
+| `client.files.upload / get / delete` | 在，參數名未變 |
+| `client.models.generate_content(model=, contents=)` | 在 |
+| `File.state` / `File.name` / `FileState.PROCESSING`/`ACTIVE` | 在 |
+| `Response.text` / `Response.candidates` / `Candidate.finish_reason` | 在 |
+| 用 2.16.0 跑專案 101 個測試 | 全過 |
 
+**結論：不鎖也不會壞。** 鎖了反而要記得日後手動解鎖。
+
+### 但有一個相反方向的問題要注意
+
+因為 `uv pip install -r` 從不升級，**`yt-dlp` 會永遠停在第一次安裝的版本**。
+目前裝的是 2026.3.13，PyPI 上已經到 2026.7.4（差四個月）。YouTube 一改前端，
+舊版 yt-dlp 就下載失敗，而啟動器不會自動幫你更新。
+
+**YouTube 下載突然壞掉時，先做這件事：**
+
+```powershell
+uv pip install --upgrade yt-dlp --python venv\Scripts\python.exe
 ```
-google-genai>=1.66,<2
-python-dotenv>=1.2,<2
-yt-dlp
-```
 
-第三行後面加註解說明為何刻意不鎖。改完要驗證：刪掉 `venv/` 重跑
-`Run SnapTranscript.bat`，確認能重建環境並正常啟動（這步會花幾分鐘，
-且需要網路）。
+這比鎖版本重要得多——鎖版本防的是不會發生的事，這條防的是遲早會發生的事。
 
-**沒有採用的做法：** 用 `uv pip compile` 產生完整 lockfile。對這個規模的
-專案（3 個直接相依）太重，而且 lockfile 會把 yt-dlp 也鎖死，跟上面的理由衝突。
+### 沒有採用的做法
+
+`uv pip compile` 產完整 lockfile：對 3 個直接相依的專案太重，而且會把 `yt-dlp`
+也鎖死，跟上面那條衝突。
 
 ## 可以做但不急
 
