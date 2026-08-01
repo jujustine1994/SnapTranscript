@@ -21,9 +21,10 @@ Python + tkinter + ffmpeg + Gemini API 的 Windows 桌面工具，把會議音�
 
 - 啟動器是 `Run SnapTranscript.bat`
 - 測試指令：`./venv/Scripts/python.exe -m unittest discover -s tests -v`（**專案沒有 pytest，不要用**）
-- 目前 50 個測試全過，執行不需要 ffmpeg、網路或 API Key
-- 2026-08-01 剛做完一輪大重構：`main.py` 從 973 行拆成 8 個模組，並新增「單段轉錄失敗不中止整個任務、結束後可補跑失敗段落」的功能，已合併進 master 並 push
+- 目前 101 個測試全過，執行不需要 ffmpeg、網路或 API Key
+- 2026-08-01 做完兩輪：先是 `main.py` 從 973 行拆成 8 個模組 + 段落級容錯（已進 master），接著在 `test-hardening-20260801` 分支補測試與衛生修正
 - 各種格式（mp3 / m4a / wav / flac）、擷取範圍、UI 互動路徑都已用真實音訊實測通過
+- 超長音訊已用 2.5 小時素材測過（記憶體全程 88 MB 無漂移），但還沒用真實 Gemini 呼叫跑完整份
 
 先讀 `README.md`、`ARCHITECTURE.md`、`TODO.md`、`PITFALLS.md` 了解全貌，`CHANGELOG.md` 的 2026-07-31 與 08-01 兩則記錄了最近的改動。
 
@@ -58,10 +59,14 @@ $s.SetOutputToWaveFile("out.wav"); $s.Speak("要念的內容"); $s.Dispose()
 
 `TODO.md` 有完整清單，摘要：
 
-1. **`transcribe_segment` 沒有任何測試** — 它的 `client` 是參數傳進去的，用假 client 就能測「PROCESSING 輪詢」「非 ACTIVE 拋錯」「呼叫失敗仍刪檔」「回傳空白結果」四條路徑，不需要網路。這是目前最划算的補強。
-2. **`ui.py` 的分段計算沒有測試** — 自動 30 分鐘一刀 + 擷取範圍夾擠的邏輯卡在 UI 執行緒函式裡。建議抽成 `segments.plan_segments(...)` 再補測試。
-3. `_write_output` 寫檔失敗時（例如磁碟滿）`.tmp` 檔會留在磁碟上不會清。
-4. `segments.py` 有兩份一模一樣的時間格式正規表示式，可提成模組常數。
-5. **超長音訊（>2 小時）的記憶體與穩定性沒測過**。這種需要跑很久，適合你趁我不在的時候跑。注意這會花 API 額度，要先算好要用幾次。
+1. **`requirements.txt` 鎖版本** — 已決定要做，具體做法（含為何 `yt-dlp` 刻意不鎖）寫在 `TODO.md` 專門的一節。驗證要刪掉 `venv/` 重跑啟動器，需要網路且花幾分鐘。
+2. **超長音訊用真實 Gemini 呼叫跑完整份** — 切割與記憶體已驗證，缺的是連續 5 段以上真實呼叫的穩定性。會花 5~6 次額度，動手前先確認。
+3. `ui.py` 的 `_worker` 仍偏長（下載、分段、建立 job、三個 except 分支都在裡面）。分段那塊已抽走，剩下的要拆得先想清楚 UI 狀態怎麼傳。
+
+## 使用者已經拍板、不要再問的決定
+
+- **重試維持固定 20 秒 × 5 次**。有資料顯示這個預算偶爾不夠（2026-08-01 那次燒完 100 秒失敗、29 秒後補跑就成功），使用者知道這個代價，選擇維持。不要再提議改成指數退避。
+- **逐字稿維持 UTF-8 無 BOM**。使用者不用 Excel 開這些檔，不需要 BOM。
+- **`MIN_SEGMENT_SECONDS` 維持 5 分鐘**。
 
 做完或有進展就記在 `TODO.md` 與 `CHANGELOG.md`，我回來看那兩份就知道發生什麼事。

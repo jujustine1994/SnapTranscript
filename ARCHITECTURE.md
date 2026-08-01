@@ -18,7 +18,7 @@
 | `transcriber.py` | Gemini 呼叫、prompt、錯誤分類 |
 | `job.py` | 轉錄流程編排（不 import tkinter，可獨立測試） |
 | `ui.py` | `SnapTranscriptApp` 主視窗 |
-| `tests/` | unittest 測試（`python -m unittest discover -s tests`） |
+| `tests/` | unittest 測試，101 個（`python -m unittest discover -s tests`）。四個檔案：`test_segments.py`（分段計算）、`test_transcriber.py`（Gemini 呼叫與錯誤分類）、`test_job.py`（轉錄流程編排）、`test_audio.py`（ffprobe / ffmpeg 包裝）。全部不需要 ffmpeg、網路或 API Key |
 | `requirements.txt` | Python 套件清單（google-genai、python-dotenv、yt-dlp） |
 | `.env` | API Key 儲存（不進版控） |
 | `.gitignore` | 排除 venv、.env、暫存檔 |
