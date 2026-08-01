@@ -578,7 +578,9 @@ class TestTempFileIsolation(JobTestBase):
         job_a = self.make_job(lambda p, c: "A")
         job_a._cut = make_capture(paths_a)
         job_b = self.make_job(lambda p, c: "B")
-        job_b._temp_tag = f"{os.getpid()}x"   # 模擬另一個行程的 PID
+        # 模擬另一個行程：前綴改成別的 PID（命名集中在 temp_prefix_for_process()
+        # 之後，這裡要動的是 _temp_prefix 而不是舊的 _temp_tag）
+        job_b._temp_prefix = f"{job.TEMP_PREFIX}{os.getpid()}x_"
         job_b._cut = make_capture(paths_b)
 
         job_a.run()
@@ -631,6 +633,59 @@ class TestLogHygiene(JobTestBase):
         all_msgs = " ".join(msg for _level, msg in self.written_logs)
         self.assertNotIn("secret.example.com", all_msgs)
         self.assertNotIn("token=abc123", all_msgs)
+
+
+class TestCleanupTempFiles(JobTestBase):
+    """關視窗時清暫存檔。背景執行緒是 daemon，行程結束時 finally 不會跑，
+    不清的話專案目錄會留下 27 MB 左右的殘檔。"""
+
+    def _touch(self, name):
+        path = os.path.join(job.config.SCRIPT_DIR, name)
+        with open(path, "wb") as f:
+            f.write(b"x")
+        return path
+
+    def test_removes_own_temp_files(self):
+        prefix = job.temp_prefix_for_process()
+        mine = [self._touch(f"{prefix}{i}.mp3") for i in range(3)]
+        self.assertEqual(job.cleanup_temp_files(), 3)
+        for p in mine:
+            self.assertFalse(os.path.exists(p))
+
+    def test_never_touches_other_instances_files(self):
+        """別的 SnapTranscript 可能正在用它自己的暫存檔，誤刪會害對方切割失敗。"""
+        other = self._touch(f"{job.TEMP_PREFIX}999999_0.mp3")
+        mine = self._touch(f"{job.temp_prefix_for_process()}0.mp3")
+
+        job.cleanup_temp_files()
+
+        self.assertTrue(os.path.exists(other), "不可刪除其他行程的暫存檔")
+        self.assertFalse(os.path.exists(mine))
+
+    def test_leaves_unrelated_files_alone(self):
+        keep = self._touch("meeting_transcript.txt")
+        job.cleanup_temp_files()
+        self.assertTrue(os.path.exists(keep))
+
+    def test_returns_zero_when_nothing_to_clean(self):
+        self.assertEqual(job.cleanup_temp_files(), 0)
+
+    def test_prefix_matches_what_the_job_actually_writes(self):
+        """清理用的前綴必須跟切割時真正寫出來的檔名一致，
+        否則關窗清不到東西，而且不會有人發現。"""
+        seen = {}
+
+        def capture_cut(audio_path, start_sec, duration_sec, output_path):
+            seen["path"] = output_path
+            fake_cut(audio_path, start_sec, duration_sec, output_path)
+
+        j = self.make_job(lambda path, client: "內容", segment_list=[(0, 1800)])
+        j._cut = capture_cut
+        j.run()
+
+        self.assertTrue(
+            os.path.basename(seen["path"]).startswith(job.temp_prefix_for_process())
+        )
 
 
 class TestWriteOutputFailure(JobTestBase):

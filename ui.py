@@ -45,9 +45,41 @@ class SnapTranscriptApp:
         self.auto_retry_var = tk.BooleanVar(value=True)
         self.log_start_time = 0.0
 
+        self._poll_after_id: str | None = None
+
         self._build_ui()
         self._load_api_key()
         self._poll_queue()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---- 關閉視窗 ----
+    def _on_close(self):
+        """關視窗前確認並清暫存檔。
+
+        背景執行緒是 daemon，行程一結束就被硬砍，`job._process_one` 的 finally
+        不會執行——不清的話專案目錄會留下一個 27 MB 左右的 `_temp_seg_*`，
+        跑幾次就是好幾百 MB。只清本行程 PID 的檔案，不動其他實例的。
+        """
+        if self.is_running:
+            if not messagebox.askyesno(
+                "任務進行中",
+                "轉錄還在進行中，現在關閉會中斷任務。\n\n"
+                "已完成的段落尚未寫檔，關閉後會遺失，\n"
+                "需要重新開始轉錄。\n\n"
+                "確定要關閉嗎？",
+            ):
+                return
+
+        if self._poll_after_id is not None:
+            # 不取消的話，destroy 後那個 after 回呼會噴
+            # 「invalid command name ..._poll_queue」
+            try:
+                self.root.after_cancel(self._poll_after_id)
+            except tk.TclError:
+                pass
+
+        job.cleanup_temp_files()
+        self.root.destroy()
 
     # ---- UI 建置 ----
     def _build_ui(self):
@@ -750,4 +782,4 @@ class SnapTranscriptApp:
                             self.btn_retry_failed.pack(side="left", padx=(6, 0))
         except queue.Empty:
             pass
-        self.root.after(100, self._poll_queue)
+        self._poll_after_id = self.root.after(100, self._poll_queue)

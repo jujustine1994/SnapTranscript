@@ -39,7 +39,11 @@
 - 修正：`get_audio_duration` 失敗時的錯誤訊息完全看不懂。音訊檔被刪除／隨身碟拔掉／選到壞檔時，使用者看到的是 `could not convert string to float: b'xxx.mp3: No such file or directory'`；改為分三種情況給明確訊息（找不到檔案／不是有效音訊／找不到 ffprobe）。同時 `stderr` 不再併進 `stdout`——原本 ffprobe 的錯誤訊息會混進要解析的數字裡
 - 修正：`cut_audio_segment` 兩次嘗試都失敗時清掉殘檔。ffmpeg 失敗仍可能留下 0 byte 或半截的檔案，留著會讓 `job` 的存在性檢查誤判切割成功，接著把壞掉的音訊上傳給 Gemini
 - 新增：`tests/test_audio.py`（9 個測試，用 mock 取代 `subprocess.run`，仍不需要 ffmpeg）
-- 測試：從 50 個增加到 96 個
+- 新增：轉錄進行中關閉視窗會跳確認對話框；確定關閉時清掉本行程 PID 的暫存檔。背景執行緒是 daemon，行程結束時 `_process_one` 的 finally 不會執行，原本會在專案目錄留下 27 MB 左右的殘檔，跑幾次就是好幾百 MB。清理只掃自己 PID 的前綴，不動其他實例的檔案
+- 重構：暫存檔命名集中到 `job.temp_prefix_for_process()`，清理與命名不再各拼各的字串
+- 修正：關閉視窗時取消 `_poll_queue` 的待處理 `after` 回呼，不再噴 `invalid command name ..._poll_queue`
+- 維護：清掉 `logs/app.log` 的測試殘留（2,103 行 → 121 行）。其中 1,972 行是 2026-07-31 以前的測試沒 patch `write_log` 寫進去的假錯誤，10 行是 08-01 UI 驗證腳本的紀錄。真實使用紀錄全部保留，清理前備份於 `logs/app.log.before-clean.bak`
+- 測試：從 50 個增加到 101 個
 - 實測：2.5 小時 mp3（137 MB）跑完 5 段真實 ffmpeg 切割，記憶體全程穩定在 88 MB 無漂移，暫存檔每段 27.5 MB 且用完即刪、無殘留，切割總耗時 1.5 秒。轉錄用假函式，未花 API 額度
 - 實測：UI 層在重構後仍走得通 — 2 小時 45 分自動切 6 段、擷取範圍 00:20:00→01:35:00 切 3 段，兩條路徑輸出檔內容與段落標題皆正確
 - 實測：尾巴合併欄位四個情境（2:33:00 音訊）— 填 5 切 5 段（末段 33 分）、填 0 切 6 段（末段 3 分）、填 30 擋下並跳格式錯誤、切到自訂切割點時欄位變灰且不做合併。視窗寬度未因新欄位變寬（461px 不變）

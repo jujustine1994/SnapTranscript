@@ -41,15 +41,49 @@
 分頁，把設定存進 `.env` 或新的 settings 檔。當時選了「只加單一欄位」的最小做法，
 因為只有尾巴門檻這一項使用者會想常態調整。
 
+## requirements.txt 鎖版本（2026-08-01 決定要做，不急）
+
+**問題：** `google-genai` 與 `yt-dlp` 都沒鎖版本。`launcher.ps1` 每次啟動都跑
+`uv pip install -r requirements.txt`，套件出破壞性改版時，下次重建 venv
+程式就開不起來——而且會發生在你要用的時候，不是你想維護的時候。
+
+**目前實裝版本（2026-08-01）：**
+
+| 套件 | 版本 | 建議做法 |
+|------|------|----------|
+| `google-genai` | 1.66.0 | **鎖** `>=1.66,<2` |
+| `python-dotenv` | 1.2.2 | 已鎖死 `==1.2.2`，建議放寬成 `>=1.2,<2` |
+| `yt-dlp` | 2026.3.13 | **不要鎖** |
+
+**為何 `yt-dlp` 不鎖：** YouTube 三天兩頭改前端，yt-dlp 靠頻繁發版追上。
+鎖死等於保證下載功能過幾個月就壞掉。這是少數「不鎖比較安全」的套件。
+
+**為何 `google-genai` 只鎖大版本：** 它遵循 semver，`<2` 擋掉破壞性改版，
+`>=1.66` 保證有目前用到的 API（`client.files.upload` / `client.models.generate_content`）。
+小版本更新照樣拿得到，不用手動追。
+
+**做法：**
+
+```
+google-genai>=1.66,<2
+python-dotenv>=1.2,<2
+yt-dlp
+```
+
+第三行後面加註解說明為何刻意不鎖。改完要驗證：刪掉 `venv/` 重跑
+`Run SnapTranscript.bat`，確認能重建環境並正常啟動（這步會花幾分鐘，
+且需要網路）。
+
+**沒有採用的做法：** 用 `uv pip compile` 產生完整 lockfile。對這個規模的
+專案（3 個直接相依）太重，而且 lockfile 會把 yt-dlp 也鎖死，跟上面的理由衝突。
+
 ## 可以做但不急
 
 - `ui.py` 的 `_worker` 仍然偏長（下載、分段、建立 job、三個 except 分支都在裡面）。
   分段那塊已經抽走了，剩下的要再拆得先想清楚 UI 狀態怎麼傳，暫時不動。
 - ~~`audio.py` 的 `get_audio_duration` 沒有處理 ffprobe 失敗~~ — 2026-08-01 修好了
-- 關視窗時 `_poll_queue` 還掛著一個 `root.after(100, ...)`，Tk 可能在關閉瞬間
-  印出 `invalid command name ..._poll_queue`。實測只在同一個行程建立多個 Tk root
-  時看得到（測試腳本），正常使用是單一 root 且緊接著行程結束，沒有實際影響。
-  真要修就是在關閉時記下 after id 並 `after_cancel`。
+- ~~關視窗時 `_poll_queue` 的 `after` 回呼會噴 `invalid command name`~~ —
+  2026-08-01 隨關窗處理一起修（`_on_close` 會 `after_cancel`）
 
 ## 設定步驟（首次使用）
 
