@@ -633,5 +633,45 @@ class TestLogHygiene(JobTestBase):
         self.assertNotIn("token=abc123", all_msgs)
 
 
+class TestWriteOutputFailure(JobTestBase):
+    """寫檔失敗（磁碟滿、權限、路徑消失）時不能在使用者的音訊資料夾留下
+    半截的 xxx_transcript.txt.tmp。"""
+
+    def test_tmp_removed_when_write_fails(self):
+        j = self.make_job(lambda path, client: "內容", segment_list=[(0, 1800)])
+        tmp_path = j.output_path + ".tmp"
+
+        real_open = open
+
+        def failing_open(path, *args, **kwargs):
+            f = real_open(path, *args, **kwargs)
+            if str(path) == tmp_path:
+                f.close()
+                raise OSError(28, "No space left on device")
+            return f
+
+        with patch("builtins.open", side_effect=failing_open):
+            with self.assertRaises(OSError):
+                j.run()
+
+        self.assertFalse(os.path.exists(tmp_path), "寫檔失敗後 .tmp 應被清除")
+
+    def test_tmp_removed_when_replace_fails(self):
+        j = self.make_job(lambda path, client: "內容", segment_list=[(0, 1800)])
+        tmp_path = j.output_path + ".tmp"
+
+        with patch.object(job.os, "replace", side_effect=OSError("rename failed")):
+            with self.assertRaises(OSError):
+                j.run()
+
+        self.assertFalse(os.path.exists(tmp_path), "replace 失敗後 .tmp 應被清除")
+
+    def test_no_tmp_left_after_successful_write(self):
+        j = self.make_job(lambda path, client: "內容", segment_list=[(0, 1800)])
+        output_path = j.run()
+        self.assertTrue(os.path.exists(output_path))
+        self.assertFalse(os.path.exists(output_path + ".tmp"))
+
+
 if __name__ == "__main__":
     unittest.main()

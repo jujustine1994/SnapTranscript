@@ -17,14 +17,21 @@ PROMPT = """請仔細聆聽這段音訊，將所有說話內容以原始語言�
 6. 盡力辨識模糊語音，結合前後文補全語意，忠實呈現內容，不要摘要或省略"""
 
 
-def transcribe_segment(audio_path: str, client: genai.Client) -> str:
-    """上傳音訊至 Gemini，取得純文字逐字稿"""
+def transcribe_segment(audio_path: str, client: genai.Client, sleep_fn=None) -> str:
+    """上傳音訊至 Gemini，取得純文字逐字稿。
+
+    `sleep_fn` 是測試注入點：傳入假的 sleep 就能測輪詢迴圈而不用真的等，
+    正式執行時維持 `time.sleep`。
+    """
+    sleep = sleep_fn or time.sleep
     audio_file = client.files.upload(file=audio_path)
     while audio_file.state.name == "PROCESSING":
-        time.sleep(2)
+        sleep(config.FILE_UPLOAD_POLL_SECONDS)
         audio_file = client.files.get(name=audio_file.name)
 
     if audio_file.state.name != "ACTIVE":
+        # 這條路徑不刪檔：檔案沒進到 ACTIVE，Gemini 端本來就沒有可用的檔案資源，
+        # 而 FAILED 狀態的檔案 Google 會自行回收（48 小時內）
         raise Exception(f"Gemini 檔案處理失敗（狀態：{audio_file.state.name}），請重試")
 
     try:
@@ -33,6 +40,8 @@ def transcribe_segment(audio_path: str, client: genai.Client) -> str:
             contents=[PROMPT, audio_file],
         )
     except Exception:
+        # 呼叫失敗也要刪雲端檔：不刪的話配額會被卡住的檔案吃掉，
+        # 而重試會再上傳一份新的
         client.files.delete(name=audio_file.name)
         raise
     client.files.delete(name=audio_file.name)

@@ -13,12 +13,12 @@ from google import genai
 
 import job
 from audio import download_youtube_audio, get_audio_duration
-from config import DEFAULT_CHUNK_SECONDS, ENV_PATH, MODEL_NAME
+from config import ENV_PATH, MODEL_NAME
 from logger import write_log, write_log_header
 from segments import (
-    build_segments,
     parse_custom_cut_points,
     parse_range,
+    plan_segments,
     seconds_to_hms,
 )
 
@@ -570,27 +570,15 @@ class SnapTranscriptApp:
             total_duration = get_audio_duration(audio_path)
             self._log(f"總時長：{seconds_to_hms(total_duration)}")
 
-            # 建立分段清單
+            # 建立分段清單（自動切點與範圍夾擠的邏輯在 segments.plan_segments，
+            # 放在那裡才測得到，見 segments.py 的說明）
+            segment_list, range_start, range_end = plan_segments(
+                total_duration, cut_points, range_bounds
+            )
             if range_bounds is not None:
-                range_start, range_end = range_bounds
-                if range_start >= int(total_duration):
-                    raise Exception("擷取範圍超出音訊總長度，請重新設定")
-                range_end = min(range_end, int(total_duration))
                 self._log(
                     f"擷取範圍：{seconds_to_hms(range_start)} → {seconds_to_hms(range_end)}"
                 )
-            else:
-                range_start, range_end = 0, int(total_duration)
-
-            if cut_points is None:
-                # 自動模式：每 30 分鐘一刀
-                auto_points = list(
-                    range(range_start + DEFAULT_CHUNK_SECONDS, range_end, DEFAULT_CHUNK_SECONDS)
-                )
-                segment_list = build_segments(auto_points, range_start, range_end)
-            else:
-                valid_points = [p for p in cut_points if range_start < p < range_end]
-                segment_list = build_segments(valid_points, range_start, range_end)
 
             # 任務起始行：檔名 + 模型 + 段數 + 重試設定，全塞同一行（不記 URL）
             write_log_header(

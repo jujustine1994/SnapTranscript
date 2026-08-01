@@ -260,7 +260,18 @@ class TranscriptionJob:
         # 先寫暫存檔再 os.replace：補跑是原地覆寫既有逐字稿，中途中斷不能
         # 讓使用者手上已有的成功段落被截斷（os.replace 在 Windows 上是原子的）
         tmp_path = self.output_path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(merged)
-        os.replace(tmp_path, self.output_path)
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(merged)
+            os.replace(tmp_path, self.output_path)
+        except OSError:
+            # 寫檔失敗（磁碟滿、權限、路徑被移除...）時把半截的 .tmp 收乾淨，
+            # 否則使用者的音訊資料夾會留下一個看不懂的 xxx_transcript.txt.tmp。
+            # 清除本身失敗就算了——原始的寫檔錯誤才是要讓使用者看到的那個。
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
         return self.output_path

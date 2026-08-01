@@ -13,7 +13,7 @@
 | `main.py` | 程式入口：banner + Tk root |
 | `config.py` | 全域常數（模型、切割長度、重試設定） |
 | `logger.py` | `logs/app.log` 落檔 |
-| `segments.py` | 時間字串解析 + 分段計算（純函式） |
+| `segments.py` | 時間字串解析 + 分段計算（純函式，`plan_segments()` 是進入點） |
 | `audio.py` | ffprobe 取時長 / ffmpeg 切割 / yt-dlp 下載 |
 | `transcriber.py` | Gemini 呼叫、prompt、錯誤分類 |
 | `job.py` | 轉錄流程編排（不 import tkinter，可獨立測試） |
@@ -36,13 +36,15 @@ Run SnapTranscript.bat
               │           ├─ 下載後馬上轉錄
               │           └─ 只下載音訊（不需 API Key）→ 下載完結束
               ├─ 選切割模式（自動 30 分 / 自訂 HH:MM:SS）
+              │     └─ 自動模式：不足 MIN_SEGMENT_SECONDS 的尾巴併回前一段
               ├─ 擷取範圍（可選）：只處理音訊的一部分（起始/結束 HH:MM:SS）
               ├─ 輸入 / 確認 API Key
               ├─ 自動重試（可選）：勾選後 503 / 空白結果自動重試，不再跳詢問 dialog
               └─ 按「開始」→ 背景執行緒
                     ├─ [YouTube 模式] yt-dlp 下載音訊（原始最佳音質轉 mp3）
                     ├─ ffprobe 取得音訊總時長
-                    ├─ 建立分段清單 [(start, end), ...]（限制在擷取範圍內）
+                    ├─ segments.plan_segments() 建立分段清單
+                    │     [(start, end), ...]（限制在擷取範圍內）
                     └─ 逐段處理（job.TranscriptionJob）：
                           ├─ ffmpeg 切割暫存檔
                           ├─ genai.upload_file 上傳
@@ -99,6 +101,19 @@ Run SnapTranscript.bat
 | `ENV_PATH` | `<專案根目錄>/.env` | API Key 儲存位置 |
 | `MAX_AUTO_RETRIES` | 5 | 勾選「自動重試」時，單段最多自動重試次數 |
 | `RETRY_WAIT_SECONDS` | 20 | 自動重試前的固定等待秒數 |
+| `FILE_UPLOAD_POLL_SECONDS` | 2 | 上傳後輪詢 Gemini 檔案狀態的間隔 |
+| `MIN_SEGMENT_SECONDS` | 60 | 自動切割時，短於此秒數的尾巴段落併回前一段（設 0 關閉） |
+
+### 短尾巴段落為何要合併
+
+自動模式每 30 分鐘一刀，30 分 05 秒的音訊會切出 `[(0,1800), (1800,1805)]`——
+第二段只有 5 秒，卻要付一次完整的切割 + 上傳 + API 呼叫，換來幾乎沒有內容的
+逐字稿，還在輸出檔裡多一個空段落標題。所以 `plan_segments()` 在自動模式下會
+把不足 `MIN_SEGMENT_SECONDS` 的尾巴撤掉最後一刀，併回前一段（變成
+`[(0, 1805)]`，最長 30 分 59 秒，離輸出 token 上限還很遠）。
+
+**自訂切割點不套用這個合併**：使用者手動輸入的位置是明確意圖，程式不該擅自
+改動。要調門檻或關掉，改 `config.MIN_SEGMENT_SECONDS`（設 0 即完全關閉）。
 
 ## 輸出格式
 
@@ -176,3 +191,23 @@ Run SnapTranscript.bat
 - **檔名帶 PID 是必要的**：兩個 SnapTranscript 同時跑時，若檔名只有段號會撞在一起，
   先結束的那個程序在 finally 清檔時，會把另一個程序剛切好的暫存檔刪掉，造成假的
   「切割失敗」，段落內容錯置的風險也一樣存在。這個情況實測重現過，不要把 PID 拿掉。
+
+## 超長音訊實測數據（2026-08-01）
+
+2.5 小時 mp3（137 MB、128 kbps）跑完 5 段，用真實 ffmpeg 切割 + 假的轉錄函式
+（不花 API 額度）：
+
+| 項目 | 結果 |
+|------|------|
+| 分段 | 5 段（最後一段 30 分 15 秒，尾巴 15 秒已併入） |
+| 單段暫存檔 | 27.5 MB，處理完立刻刪除，同時只存在一份 |
+| 行程記憶體 | 全程 88 MB，逐段量測漂移 −0.7 MB（不隨段數累積） |
+| 切割總耗時 | 1.5 秒（ffmpeg copy codec，不重新編碼） |
+| 殘留暫存檔 | 無 |
+
+記憶體不累積的原因：音訊從不整份讀進 Python，`cut_audio_segment` 是 ffmpeg
+子行程直接讀原檔寫暫存檔；Python 這端只留每段的逐字稿字串（一段約數 KB）。
+所以更長的音訊（5 小時、10 小時）在記憶體上沒有結構性風險，真正的限制是
+API 額度與總耗時。
+
+尚未驗證的部分：真實 Gemini 呼叫連續跑 5 段以上的穩定性（會花額度）。
