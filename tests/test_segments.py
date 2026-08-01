@@ -36,6 +36,28 @@ class TestPlanSegments(unittest.TestCase):
         segs, _, _ = segments.plan_segments(HALF_HOUR + config.MIN_SEGMENT_SECONDS)
         self.assertEqual(segs, [(0, 1800), (1800, 1800 + config.MIN_SEGMENT_SECONDS)])
 
+    def test_merged_segment_never_exceeds_chunk_plus_threshold(self):
+        """尾巴合併會讓最後一段變長，但長度上限必須是
+        DEFAULT_CHUNK_SECONDS + MIN_SEGMENT_SECONDS - 1（目前 34 分 59 秒）。
+
+        這條守著輸出 token 上限：門檻若被調得太大，某段可能長到超過
+        Gemini 的 65,536 輸出 token 而被截斷，且不會有任何錯誤訊息。
+        """
+        ceiling = config.DEFAULT_CHUNK_SECONDS + config.MIN_SEGMENT_SECONDS
+        # 掃過一整個 chunk 的各種尾巴長度，含剛好整除與差 1 秒的邊界
+        for extra in range(0, config.DEFAULT_CHUNK_SECONDS + 1, 7):
+            duration = config.DEFAULT_CHUNK_SECONDS * 3 + extra
+            segs, _, _ = segments.plan_segments(float(duration))
+            longest = max(e - s for s, e in segs)
+            self.assertLess(
+                longest, ceiling,
+                f"時長 {duration} 秒切出了 {longest} 秒的段落，超過上限 {ceiling}",
+            )
+            # 合併後不該有空段落，總長也必須完整覆蓋
+            self.assertEqual(segs[0][0], 0)
+            self.assertEqual(segs[-1][1], duration)
+            self.assertTrue(all(e > s for s, e in segs))
+
     def test_min_segment_zero_disables_merge(self):
         segs, _, _ = segments.plan_segments(HALF_HOUR + 5.0, min_segment_seconds=0)
         self.assertEqual(segs, [(0, 1800), (1800, 1805)])
@@ -95,6 +117,54 @@ class TestPlanSegments(unittest.TestCase):
     def test_custom_empty_list_is_single_segment(self):
         segs, _, _ = segments.plan_segments(3600.0, cut_points=[])
         self.assertEqual(segs, [(0, 3600)])
+
+
+class TestParseMinSegmentMinutes(unittest.TestCase):
+    """UI 的「尾巴不足 N 分鐘併入前段」欄位。"""
+
+    def test_valid_minutes_to_seconds(self):
+        self.assertEqual(segments.parse_min_segment_minutes("5"), 300)
+
+    def test_whitespace_tolerated(self):
+        self.assertEqual(segments.parse_min_segment_minutes("  5  "), 300)
+
+    def test_zero_disables_merge(self):
+        self.assertEqual(segments.parse_min_segment_minutes("0"), 0)
+
+    def test_empty_raises(self):
+        with self.assertRaises(ValueError):
+            segments.parse_min_segment_minutes("")
+
+    def test_non_integer_raises(self):
+        for bad in ("abc", "5.5", "五"):
+            with self.assertRaises(ValueError):
+                segments.parse_min_segment_minutes(bad)
+
+    def test_negative_raises(self):
+        with self.assertRaises(ValueError):
+            segments.parse_min_segment_minutes("-1")
+
+    def test_threshold_equal_to_chunk_raises(self):
+        # 門檻 >= 一段長度時，撤掉最後一刀會讓該段變成兩倍長，
+        # 輸出 token 可能撞上限被靜默截斷
+        with self.assertRaises(ValueError):
+            segments.parse_min_segment_minutes("30", chunk_seconds=1800)
+
+    def test_threshold_over_chunk_raises(self):
+        with self.assertRaises(ValueError):
+            segments.parse_min_segment_minutes("45", chunk_seconds=1800)
+
+    def test_just_under_chunk_is_allowed(self):
+        self.assertEqual(
+            segments.parse_min_segment_minutes("29", chunk_seconds=1800), 29 * 60
+        )
+
+    def test_default_config_value_is_accepted(self):
+        """config.py 的預設值本身必須通過驗證，否則使用者一開視窗就是錯的。"""
+        self.assertEqual(
+            segments.parse_min_segment_minutes(str(config.MIN_SEGMENT_SECONDS // 60)),
+            config.MIN_SEGMENT_SECONDS,
+        )
 
 
 class TestBuildSegments(unittest.TestCase):

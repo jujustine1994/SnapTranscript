@@ -66,6 +66,36 @@ def parse_range(start_text: str, end_text: str) -> tuple[int, int]:
     return start_sec, end_sec
 
 
+def parse_min_segment_minutes(
+    text: str, chunk_seconds: int = config.DEFAULT_CHUNK_SECONDS
+) -> int:
+    """把 UI 的「尾巴不足 N 分鐘併入前段」輸入轉成秒數。0 代表關閉合併。
+
+    上限必須小於 `chunk_seconds`，這不是隨便訂的：`plan_segments()` 合併尾巴的
+    做法是撤掉「最後一刀」，只撤一刀。門檻若 >= 一段的長度，撤掉後的那段會變成
+    兩倍長（30 分的設定會切出 60 分的段落），輸出 token 可能撞上 65,536 上限
+    而被靜默截斷——逐字稿會少一截且沒有任何錯誤訊息。
+    """
+    text = text.strip()
+    if not text:
+        raise ValueError("請輸入尾巴合併門檻（分鐘），填 0 代表不合併")
+    try:
+        minutes = int(text)
+    except ValueError:
+        raise ValueError(
+            f"格式錯誤：「{text}」，請輸入整數分鐘（例如 5），填 0 代表不合併"
+        ) from None
+    if minutes < 0:
+        raise ValueError("尾巴合併門檻不能是負數，填 0 代表不合併")
+    limit = chunk_seconds // 60
+    if minutes >= limit:
+        raise ValueError(
+            f"尾巴合併門檻必須小於切割長度（{limit} 分鐘），"
+            f"否則合併後的段落會長到可能超出 Gemini 的輸出上限"
+        )
+    return minutes * 60
+
+
 def build_segments(cut_points: list[int], range_start: int, range_end: int) -> list[tuple[int, int]]:
     """從切割點建立 (start_sec, end_sec) 清單，限制在 [range_start, range_end] 範圍內"""
     boundaries = [range_start] + cut_points + [range_end]

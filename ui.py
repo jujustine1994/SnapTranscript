@@ -13,10 +13,11 @@ from google import genai
 
 import job
 from audio import download_youtube_audio, get_audio_duration
-from config import ENV_PATH, MODEL_NAME
+from config import DEFAULT_CHUNK_SECONDS, ENV_PATH, MIN_SEGMENT_SECONDS, MODEL_NAME
 from logger import write_log, write_log_header
 from segments import (
     parse_custom_cut_points,
+    parse_min_segment_minutes,
     parse_range,
     plan_segments,
     seconds_to_hms,
@@ -153,16 +154,29 @@ class SnapTranscriptApp:
 
         self.cut_mode = tk.StringVar(value="auto")
         ttk.Radiobutton(
-            frame_cut, text="自動（每 30 分鐘切一段）",
+            frame_cut, text=f"自動（每 {DEFAULT_CHUNK_SECONDS // 60} 分鐘切一段）",
             variable=self.cut_mode, value="auto", command=self._toggle_cut_mode,
         ).grid(row=0, column=0, sticky="w")
+
+        # 尾巴合併門檻：只對自動模式有意義，所以縮排掛在「自動」底下，
+        # 切到「自訂切割點」時整列 disable（自訂切點不做合併，見 segments.py）
+        self.frame_min_seg = ttk.Frame(frame_cut)
+        self.frame_min_seg.grid(row=1, column=0, sticky="w", padx=(20, 0), pady=(2, 0))
+        ttk.Label(self.frame_min_seg, text="└ 尾巴不足").pack(side="left")
+        self.min_seg_var = tk.StringVar(value=str(MIN_SEGMENT_SECONDS // 60))
+        self.entry_min_seg = ttk.Entry(
+            self.frame_min_seg, textvariable=self.min_seg_var, width=4, justify="center"
+        )
+        self.entry_min_seg.pack(side="left", padx=4)
+        ttk.Label(self.frame_min_seg, text="分鐘就併入前一段（填 0 不合併）").pack(side="left")
+
         ttk.Radiobutton(
             frame_cut, text="自訂切割點",
             variable=self.cut_mode, value="custom", command=self._toggle_cut_mode,
-        ).grid(row=1, column=0, sticky="w")
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
 
         self.frame_custom = ttk.Frame(frame_cut)
-        self.frame_custom.grid(row=2, column=0, sticky="ew", padx=(20, 0), pady=(6, 0))
+        self.frame_custom.grid(row=3, column=0, sticky="ew", padx=(20, 0), pady=(6, 0))
         ttk.Label(self.frame_custom, text="輸入切割時間點（HH:MM:SS，每行一個）：").pack(anchor="w")
         self.cut_text = scrolledtext.ScrolledText(
             self.frame_custom, width=28, height=5, font=("Consolas", 10)
@@ -296,10 +310,13 @@ class SnapTranscriptApp:
         ttk.Button(win, text="關閉", command=win.destroy).pack(pady=(0, 16))
 
     def _toggle_cut_mode(self):
-        if self.cut_mode.get() == "custom":
+        is_custom = self.cut_mode.get() == "custom"
+        if is_custom:
             self.frame_custom.grid()
         else:
             self.frame_custom.grid_remove()
+        # 尾巴合併只作用於自動模式，切到自訂就 dim 掉，免得以為有生效
+        self._set_widgets_state(self.frame_min_seg, "disabled" if is_custom else "normal")
         self.root.update_idletasks()
 
     def _toggle_range_mode(self):
@@ -471,12 +488,21 @@ class SnapTranscriptApp:
 
         # 解析自訂切割點（只下載模式不需要）
         cut_points = None
-        if not download_only and self.cut_mode.get() == "custom":
-            try:
-                cut_points = parse_custom_cut_points(self.cut_text.get("1.0", "end"))
-            except ValueError as e:
-                messagebox.showerror("格式錯誤", str(e))
-                return
+        min_segment_seconds = MIN_SEGMENT_SECONDS
+        if not download_only:
+            if self.cut_mode.get() == "custom":
+                try:
+                    cut_points = parse_custom_cut_points(self.cut_text.get("1.0", "end"))
+                except ValueError as e:
+                    messagebox.showerror("格式錯誤", str(e))
+                    return
+            else:
+                # 尾巴合併門檻只在自動模式讀取，自訂模式不套用
+                try:
+                    min_segment_seconds = parse_min_segment_minutes(self.min_seg_var.get())
+                except ValueError as e:
+                    messagebox.showerror("格式錯誤", str(e))
+                    return
 
         # 解析擷取範圍（只下載模式不需要）
         range_bounds = None
@@ -519,7 +545,8 @@ class SnapTranscriptApp:
 
         t = threading.Thread(
             target=self._worker,
-            args=(source_info, cut_points, client, range_bounds, auto_retry),
+            args=(source_info, cut_points, client, range_bounds, auto_retry,
+                  min_segment_seconds),
             daemon=True,
         )
         t.start()
@@ -531,6 +558,7 @@ class SnapTranscriptApp:
         client: genai.Client,
         range_bounds: tuple[int, int] | None,
         auto_retry: bool = False,
+        min_segment_seconds: int = MIN_SEGMENT_SECONDS,
     ):
         """背景執行緒：（下載）+ 切割 + 上傳 + 轉錄 + 合併"""
         self.log_start_time = time.time()
@@ -573,7 +601,8 @@ class SnapTranscriptApp:
             # 建立分段清單（自動切點與範圍夾擠的邏輯在 segments.plan_segments，
             # 放在那裡才測得到，見 segments.py 的說明）
             segment_list, range_start, range_end = plan_segments(
-                total_duration, cut_points, range_bounds
+                total_duration, cut_points, range_bounds,
+                min_segment_seconds=min_segment_seconds,
             )
             if range_bounds is not None:
                 self._log(
