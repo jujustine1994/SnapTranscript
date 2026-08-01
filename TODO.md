@@ -7,7 +7,10 @@
 - [x] 擷取範圍功能 end-to-end 實測 — 2026-08-01 用 44 分鐘 m4a 取 00:10:00→00:13:00 通過
 - [x] 測試音訊格式 — mp3 / m4a / wav / flac 全部於 2026-08-01 實測通過
 - [x] 從 UI 完整走一次 — 2026-08-01 通過（含失敗→跳過續跑→補跑按鈕→補跑完成）
-- [ ] 測試超長音訊（>2 小時）的記憶體與穩定性
+- [x] 測試超長音訊（>2 小時）的記憶體與穩定性 — 2026-08-01 用 2.5 小時 mp3 實測，
+      記憶體全程 88 MB 無漂移、暫存檔無殘留，數據記在 `ARCHITECTURE.md`
+      「超長音訊實測數據」。轉錄用假函式，未花 API 額度
+- [ ] 超長音訊用真實 Gemini 呼叫跑完整份（會花 5+ 次額度，想驗證連續呼叫的穩定性再做）
 
 - [x] 對話框標題不再寫死「503 伺服器錯誤」（2026-08-01 修，改為中性的「轉錄失敗」）
 - [x] 補跑按鈕區分「失敗」與「未處理」（2026-08-01 修）
@@ -18,14 +21,69 @@
   2026-07-31 那輪重構事後才抓到三處失準：PITFALLS 指到已搬走的 `main.py`、
   ARCHITECTURE 寫著已更名的 `_write_log`、README 寫的啟動器檔名根本不存在。
 
+## 已完成的程式碼衛生工作（2026-08-01）
+
+- [x] 自動切點計算與擷取範圍夾擠邏輯抽成 `segments.plan_segments()`，補 17 個測試
+- [x] `transcriber.transcribe_segment` 補 7 個測試（假 client，不需網路）
+- [x] `_write_output` 寫檔失敗時清除殘留的 `.tmp`
+- [x] `segments.py` 兩份重複的 HH:MM:SS 正規表示式合併為 `TIME_PATTERN`
+
+## 設定介面現況
+
+目前**沒有設定 tab**，視窗是單一頁面（音訊來源／擷取範圍／切割設定／API Key／進度）。
+可調參數的分工是：
+
+- 「尾巴合併門檻」有 UI 欄位（切割設定區），`config.MIN_SEGMENT_SECONDS` 只是預設值
+- 其餘（`DEFAULT_CHUNK_SECONDS`、`MAX_AUTO_RETRIES`、`RETRY_WAIT_SECONDS`、
+  `FILE_UPLOAD_POLL_SECONDS`）仍只能改 `config.py`
+
+之後若想把更多參數搬上 UI，2026-08-01 討論過的做法是加 `ttk.Notebook`「進階設定」
+分頁，把設定存進 `.env` 或新的 settings 檔。當時選了「只加單一欄位」的最小做法，
+因為只有尾巴門檻這一項使用者會想常態調整。
+
+## requirements.txt 鎖版本（2026-08-01 決定要做，不急）
+
+**問題：** `google-genai` 與 `yt-dlp` 都沒鎖版本。`launcher.ps1` 每次啟動都跑
+`uv pip install -r requirements.txt`，套件出破壞性改版時，下次重建 venv
+程式就開不起來——而且會發生在你要用的時候，不是你想維護的時候。
+
+**目前實裝版本（2026-08-01）：**
+
+| 套件 | 版本 | 建議做法 |
+|------|------|----------|
+| `google-genai` | 1.66.0 | **鎖** `>=1.66,<2` |
+| `python-dotenv` | 1.2.2 | 已鎖死 `==1.2.2`，建議放寬成 `>=1.2,<2` |
+| `yt-dlp` | 2026.3.13 | **不要鎖** |
+
+**為何 `yt-dlp` 不鎖：** YouTube 三天兩頭改前端，yt-dlp 靠頻繁發版追上。
+鎖死等於保證下載功能過幾個月就壞掉。這是少數「不鎖比較安全」的套件。
+
+**為何 `google-genai` 只鎖大版本：** 它遵循 semver，`<2` 擋掉破壞性改版，
+`>=1.66` 保證有目前用到的 API（`client.files.upload` / `client.models.generate_content`）。
+小版本更新照樣拿得到，不用手動追。
+
+**做法：**
+
+```
+google-genai>=1.66,<2
+python-dotenv>=1.2,<2
+yt-dlp
+```
+
+第三行後面加註解說明為何刻意不鎖。改完要驗證：刪掉 `venv/` 重跑
+`Run SnapTranscript.bat`，確認能重建環境並正常啟動（這步會花幾分鐘，
+且需要網路）。
+
+**沒有採用的做法：** 用 `uv pip compile` 產生完整 lockfile。對這個規模的
+專案（3 個直接相依）太重，而且 lockfile 會把 yt-dlp 也鎖死，跟上面的理由衝突。
+
 ## 可以做但不急
 
-- `ui.py` 的自動切點計算與擷取範圍夾擠邏輯還卡在 UI 執行緒函式裡，沒有測試。
-  可抽成 `segments.plan_segments(...)` 再補測試。
-- `transcriber.transcribe_segment` 沒有測試。它的 `client` 是參數傳進去的，
-  用假的 client 就能測「PROCESSING 輪詢」「非 ACTIVE 拋錯」「失敗仍刪檔」
-  「空白結果」四條路徑，不需要網路或 API Key。
-- `_write_output` 寫檔失敗時（例如磁碟滿）`.tmp` 檔會留在磁碟上不會自動清除。
+- `ui.py` 的 `_worker` 仍然偏長（下載、分段、建立 job、三個 except 分支都在裡面）。
+  分段那塊已經抽走了，剩下的要再拆得先想清楚 UI 狀態怎麼傳，暫時不動。
+- ~~`audio.py` 的 `get_audio_duration` 沒有處理 ffprobe 失敗~~ — 2026-08-01 修好了
+- ~~關視窗時 `_poll_queue` 的 `after` 回呼會噴 `invalid command name`~~ —
+  2026-08-01 隨關窗處理一起修（`_on_close` 會 `after_cancel`）
 
 ## 設定步驟（首次使用）
 

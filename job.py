@@ -16,6 +16,43 @@ import segments as segmod
 import transcriber
 
 
+TEMP_PREFIX = "_temp_seg_"
+
+
+def temp_prefix_for_process() -> str:
+    """本行程專用的暫存檔前綴 `_temp_seg_<PID>_`。
+
+    帶 PID 是必要的：兩個 SnapTranscript 同時跑時，檔名若只有段號會互相覆寫、
+    甚至把對方剛切好的檔案在 finally 裡刪掉，造成假的「切割失敗」或段落內容
+    錯置（實測重現過）。前綴集中在這裡，清理與命名才不會各拼各的。
+    """
+    return f"{TEMP_PREFIX}{os.getpid()}_"
+
+
+def cleanup_temp_files() -> int:
+    """刪除**本行程**留下的暫存檔，回傳刪除數量。
+
+    只刪自己 PID 的檔案——別的 SnapTranscript 實例可能正在用它自己的暫存檔，
+    誤刪會害對方切割失敗。關視窗時呼叫：背景執行緒是 daemon，行程結束時
+    `_process_one` 的 finally 不會執行，不清的話 27 MB 的暫存檔會留在專案目錄。
+    """
+    prefix = temp_prefix_for_process()
+    removed = 0
+    try:
+        names = os.listdir(config.SCRIPT_DIR)
+    except OSError:
+        return 0
+    for name in names:
+        if not name.startswith(prefix):
+            continue
+        try:
+            os.remove(os.path.join(config.SCRIPT_DIR, name))
+            removed += 1
+        except OSError:
+            pass   # 檔案正被 ffmpeg 寫入等情況，清不掉就算了，不能拖住關閉流程
+    return removed
+
+
 class QuotaExhausted(Exception):
     """API 配額用盡（429）。重試無用，必須中止整個任務。"""
 
@@ -63,10 +100,9 @@ class TranscriptionJob:
         ]
         self.output_path = os.path.splitext(audio_path)[0] + "_transcript.txt"
         self._ext = os.path.splitext(audio_path)[1] or ".mp3"
-        # 暫存檔名帶 PID：兩個 SnapTranscript 同時跑時，檔名若只有段號會互相
-        # 覆寫、甚至把對方剛切好的檔案在 finally 裡刪掉，造成假的「切割失敗」
-        # 或段落內容錯置（實測重現過）
-        self._temp_tag = os.getpid()
+        # 命名規則集中在 temp_prefix_for_process()，關窗時的 cleanup_temp_files()
+        # 才能用同一個前綴找到檔案（見該函式的說明）
+        self._temp_prefix = temp_prefix_for_process()
 
     # ---- 狀態查詢 ----
     @property
@@ -134,7 +170,7 @@ class TranscriptionJob:
         self.cb.log(f"\n[{r.index}/{self.total}] 切割 {start_hms} → {end_hms}...")
 
         temp_path = os.path.join(
-            config.SCRIPT_DIR, f"_temp_seg_{self._temp_tag}_{r.index - 1}{self._ext}"
+            config.SCRIPT_DIR, f"{self._temp_prefix}{r.index - 1}{self._ext}"
         )
         try:
             self._cut(self.audio_path, r.start_sec, r.end_sec - r.start_sec, temp_path)
@@ -260,7 +296,18 @@ class TranscriptionJob:
         # 先寫暫存檔再 os.replace：補跑是原地覆寫既有逐字稿，中途中斷不能
         # 讓使用者手上已有的成功段落被截斷（os.replace 在 Windows 上是原子的）
         tmp_path = self.output_path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(merged)
-        os.replace(tmp_path, self.output_path)
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                f.write(merged)
+            os.replace(tmp_path, self.output_path)
+        except OSError:
+            # 寫檔失敗（磁碟滿、權限、路徑被移除...）時把半截的 .tmp 收乾淨，
+            # 否則使用者的音訊資料夾會留下一個看不懂的 xxx_transcript.txt.tmp。
+            # 清除本身失敗就算了——原始的寫檔錯誤才是要讓使用者看到的那個。
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
         return self.output_path

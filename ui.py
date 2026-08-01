@@ -13,12 +13,13 @@ from google import genai
 
 import job
 from audio import download_youtube_audio, get_audio_duration
-from config import DEFAULT_CHUNK_SECONDS, ENV_PATH, MODEL_NAME
+from config import DEFAULT_CHUNK_SECONDS, ENV_PATH, MIN_SEGMENT_SECONDS, MODEL_NAME
 from logger import write_log, write_log_header
 from segments import (
-    build_segments,
     parse_custom_cut_points,
+    parse_min_segment_minutes,
     parse_range,
+    plan_segments,
     seconds_to_hms,
 )
 
@@ -44,9 +45,41 @@ class SnapTranscriptApp:
         self.auto_retry_var = tk.BooleanVar(value=True)
         self.log_start_time = 0.0
 
+        self._poll_after_id: str | None = None
+
         self._build_ui()
         self._load_api_key()
         self._poll_queue()
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---- 關閉視窗 ----
+    def _on_close(self):
+        """關視窗前確認並清暫存檔。
+
+        背景執行緒是 daemon，行程一結束就被硬砍，`job._process_one` 的 finally
+        不會執行——不清的話專案目錄會留下一個 27 MB 左右的 `_temp_seg_*`，
+        跑幾次就是好幾百 MB。只清本行程 PID 的檔案，不動其他實例的。
+        """
+        if self.is_running:
+            if not messagebox.askyesno(
+                "任務進行中",
+                "轉錄還在進行中，現在關閉會中斷任務。\n\n"
+                "已完成的段落尚未寫檔，關閉後會遺失，\n"
+                "需要重新開始轉錄。\n\n"
+                "確定要關閉嗎？",
+            ):
+                return
+
+        if self._poll_after_id is not None:
+            # 不取消的話，destroy 後那個 after 回呼會噴
+            # 「invalid command name ..._poll_queue」
+            try:
+                self.root.after_cancel(self._poll_after_id)
+            except tk.TclError:
+                pass
+
+        job.cleanup_temp_files()
+        self.root.destroy()
 
     # ---- UI 建置 ----
     def _build_ui(self):
@@ -153,16 +186,29 @@ class SnapTranscriptApp:
 
         self.cut_mode = tk.StringVar(value="auto")
         ttk.Radiobutton(
-            frame_cut, text="自動（每 30 分鐘切一段）",
+            frame_cut, text=f"自動（每 {DEFAULT_CHUNK_SECONDS // 60} 分鐘切一段）",
             variable=self.cut_mode, value="auto", command=self._toggle_cut_mode,
         ).grid(row=0, column=0, sticky="w")
+
+        # 尾巴合併門檻：只對自動模式有意義，所以縮排掛在「自動」底下，
+        # 切到「自訂切割點」時整列 disable（自訂切點不做合併，見 segments.py）
+        self.frame_min_seg = ttk.Frame(frame_cut)
+        self.frame_min_seg.grid(row=1, column=0, sticky="w", padx=(20, 0), pady=(2, 0))
+        ttk.Label(self.frame_min_seg, text="└ 尾巴不足").pack(side="left")
+        self.min_seg_var = tk.StringVar(value=str(MIN_SEGMENT_SECONDS // 60))
+        self.entry_min_seg = ttk.Entry(
+            self.frame_min_seg, textvariable=self.min_seg_var, width=4, justify="center"
+        )
+        self.entry_min_seg.pack(side="left", padx=4)
+        ttk.Label(self.frame_min_seg, text="分鐘就併入前一段（填 0 不合併）").pack(side="left")
+
         ttk.Radiobutton(
             frame_cut, text="自訂切割點",
             variable=self.cut_mode, value="custom", command=self._toggle_cut_mode,
-        ).grid(row=1, column=0, sticky="w")
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
 
         self.frame_custom = ttk.Frame(frame_cut)
-        self.frame_custom.grid(row=2, column=0, sticky="ew", padx=(20, 0), pady=(6, 0))
+        self.frame_custom.grid(row=3, column=0, sticky="ew", padx=(20, 0), pady=(6, 0))
         ttk.Label(self.frame_custom, text="輸入切割時間點（HH:MM:SS，每行一個）：").pack(anchor="w")
         self.cut_text = scrolledtext.ScrolledText(
             self.frame_custom, width=28, height=5, font=("Consolas", 10)
@@ -296,10 +342,13 @@ class SnapTranscriptApp:
         ttk.Button(win, text="關閉", command=win.destroy).pack(pady=(0, 16))
 
     def _toggle_cut_mode(self):
-        if self.cut_mode.get() == "custom":
+        is_custom = self.cut_mode.get() == "custom"
+        if is_custom:
             self.frame_custom.grid()
         else:
             self.frame_custom.grid_remove()
+        # 尾巴合併只作用於自動模式，切到自訂就 dim 掉，免得以為有生效
+        self._set_widgets_state(self.frame_min_seg, "disabled" if is_custom else "normal")
         self.root.update_idletasks()
 
     def _toggle_range_mode(self):
@@ -471,12 +520,21 @@ class SnapTranscriptApp:
 
         # 解析自訂切割點（只下載模式不需要）
         cut_points = None
-        if not download_only and self.cut_mode.get() == "custom":
-            try:
-                cut_points = parse_custom_cut_points(self.cut_text.get("1.0", "end"))
-            except ValueError as e:
-                messagebox.showerror("格式錯誤", str(e))
-                return
+        min_segment_seconds = MIN_SEGMENT_SECONDS
+        if not download_only:
+            if self.cut_mode.get() == "custom":
+                try:
+                    cut_points = parse_custom_cut_points(self.cut_text.get("1.0", "end"))
+                except ValueError as e:
+                    messagebox.showerror("格式錯誤", str(e))
+                    return
+            else:
+                # 尾巴合併門檻只在自動模式讀取，自訂模式不套用
+                try:
+                    min_segment_seconds = parse_min_segment_minutes(self.min_seg_var.get())
+                except ValueError as e:
+                    messagebox.showerror("格式錯誤", str(e))
+                    return
 
         # 解析擷取範圍（只下載模式不需要）
         range_bounds = None
@@ -519,7 +577,8 @@ class SnapTranscriptApp:
 
         t = threading.Thread(
             target=self._worker,
-            args=(source_info, cut_points, client, range_bounds, auto_retry),
+            args=(source_info, cut_points, client, range_bounds, auto_retry,
+                  min_segment_seconds),
             daemon=True,
         )
         t.start()
@@ -531,6 +590,7 @@ class SnapTranscriptApp:
         client: genai.Client,
         range_bounds: tuple[int, int] | None,
         auto_retry: bool = False,
+        min_segment_seconds: int = MIN_SEGMENT_SECONDS,
     ):
         """背景執行緒：（下載）+ 切割 + 上傳 + 轉錄 + 合併"""
         self.log_start_time = time.time()
@@ -570,27 +630,16 @@ class SnapTranscriptApp:
             total_duration = get_audio_duration(audio_path)
             self._log(f"總時長：{seconds_to_hms(total_duration)}")
 
-            # 建立分段清單
+            # 建立分段清單（自動切點與範圍夾擠的邏輯在 segments.plan_segments，
+            # 放在那裡才測得到，見 segments.py 的說明）
+            segment_list, range_start, range_end = plan_segments(
+                total_duration, cut_points, range_bounds,
+                min_segment_seconds=min_segment_seconds,
+            )
             if range_bounds is not None:
-                range_start, range_end = range_bounds
-                if range_start >= int(total_duration):
-                    raise Exception("擷取範圍超出音訊總長度，請重新設定")
-                range_end = min(range_end, int(total_duration))
                 self._log(
                     f"擷取範圍：{seconds_to_hms(range_start)} → {seconds_to_hms(range_end)}"
                 )
-            else:
-                range_start, range_end = 0, int(total_duration)
-
-            if cut_points is None:
-                # 自動模式：每 30 分鐘一刀
-                auto_points = list(
-                    range(range_start + DEFAULT_CHUNK_SECONDS, range_end, DEFAULT_CHUNK_SECONDS)
-                )
-                segment_list = build_segments(auto_points, range_start, range_end)
-            else:
-                valid_points = [p for p in cut_points if range_start < p < range_end]
-                segment_list = build_segments(valid_points, range_start, range_end)
 
             # 任務起始行：檔名 + 模型 + 段數 + 重試設定，全塞同一行（不記 URL）
             write_log_header(
@@ -733,4 +782,4 @@ class SnapTranscriptApp:
                             self.btn_retry_failed.pack(side="left", padx=(6, 0))
         except queue.Empty:
             pass
-        self.root.after(100, self._poll_queue)
+        self._poll_after_id = self.root.after(100, self._poll_queue)
