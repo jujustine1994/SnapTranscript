@@ -21,12 +21,26 @@
   2026-07-31 那輪重構事後才抓到三處失準：PITFALLS 指到已搬走的 `main.py`、
   ARCHITECTURE 寫著已更名的 `_write_log`、README 寫的啟動器檔名根本不存在。
 
-## 已完成的程式碼衛生工作（2026-08-01）
+## 已完成的程式碼衛生工作
+
+**2026-08-01**
 
 - [x] 自動切點計算與擷取範圍夾擠邏輯抽成 `segments.plan_segments()`，補 17 個測試
 - [x] `transcriber.transcribe_segment` 補 7 個測試（假 client，不需網路）
 - [x] `_write_output` 寫檔失敗時清除殘留的 `.tmp`
 - [x] `segments.py` 兩份重複的 HH:MM:SS 正規表示式合併為 `TIME_PATTERN`
+- [x] `audio.get_audio_duration` 失敗時給看得懂的錯誤訊息（原本是
+      `could not convert string to float`）
+- [x] `cut_audio_segment` 兩次都失敗時清掉殘檔
+
+**2026-08-02**
+
+- [x] `ui.py` 的 `_worker`（94 行）拆成 `_resolve_audio_source` /
+      `_download_progress` / `_plan_and_announce` / `_abort`，本體降到 45 行
+- [x] 關視窗時 `after_cancel` 掉 `_poll_queue` 的待處理回呼
+- [x] 重試邏輯稽核：修掉手動模式錯誤行永遠寫「重試 0/5」的缺陷，
+      並補上先前沒測到的四塊路徑（空白結果重試、實際嘗試次數、
+      每段額度重置、手動模式無上限與重試中 429）
 
 ## 設定介面現況
 
@@ -92,11 +106,10 @@ uv pip install --upgrade yt-dlp --python venv\Scripts\python.exe
 
 ## 可以做但不急
 
-- ~~`ui.py` 的 `_worker` 偏長~~ — 2026-08-02 拆成 `_resolve_audio_source` /
-  `_download_progress` / `_plan_and_announce` / `_abort`，`_worker` 從 94 行降到 45 行
-- ~~`audio.py` 的 `get_audio_duration` 沒有處理 ffprobe 失敗~~ — 2026-08-01 修好了
-- ~~關視窗時 `_poll_queue` 的 `after` 回呼會噴 `invalid command name`~~ —
-  2026-08-01 隨關窗處理一起修（`_on_close` 會 `after_cancel`）
+- `transcriber.PROMPT` 仍放在 `transcriber.py`，沒有搬進 `config.py`。它算是可調參數，
+  但搬過去只是換位置、不會讓它更好調（真要調的是內容，那會直接影響逐字稿品質）。
+  暫時維持現狀。
+- 目前沒有其他已知的程式碼衛生問題。
 
 ## 設定步驟（首次使用）
 

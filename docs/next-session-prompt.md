@@ -21,8 +21,17 @@ Python + tkinter + ffmpeg + Gemini API 的 Windows 桌面工具，把會議音�
 
 - 啟動器是 `Run SnapTranscript.bat`
 - 測試指令：`./venv/Scripts/python.exe -m unittest discover -s tests -v`（**專案沒有 pytest，不要用**）
-- 目前 101 個測試全過，執行不需要 ffmpeg、網路或 API Key
-- 2026-08-01 做完兩輪：先是 `main.py` 從 973 行拆成 8 個模組 + 段落級容錯（已進 master），接著在 `test-hardening-20260801` 分支補測試與衛生修正
+- 目前 111 個測試全過，執行不需要 ffmpeg、網路或 API Key
+- 2026-08-01 做完兩輪：`main.py` 從 973 行拆成 8 個模組 + 段落級容錯，以及一輪測試補強與衛生修正，都已合併進 master
+- 2026-08-02 又做了一輪：`_worker` 拆分、重試邏輯稽核（修掉手動模式 log 永遠寫「重試 0/5」的缺陷）
+
+## ⚠️ GitHub 帳號目前被停權
+
+2026-08-02 起 `jujustine1994` 被 GitHub 停權，push 會回 403（`Your account is suspended`），未登入抓 `github.com/jujustine1994` 也是 404。使用者已知情、正在處理，**不要花時間排查 git 設定或憑證，那不是問題所在**。
+
+- 本地 `master` 目前領先 `origin/master` 數個 commit，帳號恢復後 `git push origin master` 即可，不需重做任何事
+- 完整離線備份：`C:\Users\CTH\Documents\SnapTranscript-backup-20260802.bundle`（`git bundle`，含所有分支與歷史，已驗證）
+- 這段期間照常 commit 到本地就好
 - 各種格式（mp3 / m4a / wav / flac）、擷取範圍、UI 互動路徑都已用真實音訊實測通過
 - 超長音訊已用 2.5 小時素材測過（記憶體全程 88 MB 無漂移），但還沒用真實 Gemini 呼叫跑完整份
 
