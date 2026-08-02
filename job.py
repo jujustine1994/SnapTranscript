@@ -198,7 +198,11 @@ class TranscriptionJob:
         回傳 None 不是錯誤處理的偷懶——單段失敗不該毀掉整個任務，
         呼叫端會標記這段、繼續跑下一段，結束後可用「重試失敗的 N 段」補跑。
         """
-        retry_count = 0
+        # 兩種模式共用一個計數器：自動模式拿它比對上限，手動模式只用於落檔。
+        # 原本只在自動分支遞增，手動模式每一行都寫「重試 0/5」——使用者按了
+        # 1 次還是 20 次「是」，log 長得一模一樣，事後查不出來；而且「/5」
+        # 暗示有上限，但手動模式是無上限的（見 PITFALLS 503 條目）。
+        retries_done = 0
         while True:
             try:
                 return self._transcribe(temp_path, self.client)
@@ -218,25 +222,30 @@ class TranscriptionJob:
                 reason, status = classified
 
                 # 錯誤行只記例外類型 + status + 重試次數（見 ARCHITECTURE.md 落檔紀律）
+                progress = (
+                    f"重試 {retries_done}/{config.MAX_AUTO_RETRIES}"
+                    if self.auto_retry
+                    else f"手動重試 {retries_done}"
+                )
                 logger.write_log(
                     f"第{r.index}段 上傳Gemini -> {type(e).__name__} | "
-                    f"{status} | 重試 {retry_count}/{config.MAX_AUTO_RETRIES}",
+                    f"{status} | {progress}",
                     "ERROR",
                 )
                 self.cb.log(f"[錯誤] {reason}")
 
+                retries_done += 1
                 if self.auto_retry:
-                    retry_count += 1
-                    if retry_count > config.MAX_AUTO_RETRIES:
+                    if retries_done > config.MAX_AUTO_RETRIES:
                         return self._mark_failed(
                             r, status,
                             f"{reason}，已自動重試 {config.MAX_AUTO_RETRIES} 次仍失敗",
                         )
                     self.cb.log(
                         f"[{r.index}/{self.total}] 自動重試中... "
-                        f"({retry_count}/{config.MAX_AUTO_RETRIES})"
+                        f"({retries_done}/{config.MAX_AUTO_RETRIES})"
                     )
-                    self._wait_before_retry(r, retry_count)
+                    self._wait_before_retry(r, retries_done)
                 else:
                     if not self.cb.ask(f"{reason}，是否重試？"):
                         return self._mark_failed(

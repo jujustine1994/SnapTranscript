@@ -310,6 +310,114 @@ class TestRetry(JobTestBase):
         self.assertEqual(self.sleeper.total, 0)
 
 
+BLANK_RESULT_ERROR = (
+    "Gemini 回傳空白結果（finish_reason: MALFORMED_RESPONSE），"
+    "可能因內容審查攔截或無法辨識音訊，請重試"
+)
+
+
+class TestBlankResultRetry(JobTestBase):
+    """「Gemini 回傳空白結果」是與 503 並列的另一種暫時性錯誤（PITFALLS 有專門條目），
+    但先前所有重試測試都只用 503，這條路徑等於沒有測試守著。"""
+
+    def test_blank_result_is_retried(self):
+        state = {"calls": 0}
+
+        def flaky(path, client):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise Exception(BLANK_RESULT_ERROR)
+            return "成功內容"
+
+        j = self.make_job(flaky, segment_list=[(0, 1800)])
+        output_path = j.run()
+
+        self.assertEqual(j.failed_count, 0)
+        self.assertIn("成功內容", self.read_output(output_path))
+        self.assertEqual(self.sleeper.total, job.config.RETRY_WAIT_SECONDS)
+
+    def test_blank_result_exhausted_says_so_in_placeholder(self):
+        def always_blank(path, client):
+            raise Exception(BLANK_RESULT_ERROR)
+
+        j = self.make_job(always_blank, segment_list=[(0, 1800)])
+        output_path = j.run()
+
+        text = self.read_output(output_path)
+        self.assertIn("Gemini 回傳空白結果", text)
+        # 佔位符不該混進 503 的說法
+        self.assertNotIn("503", text)
+
+    def test_blank_result_logged_with_its_own_status(self):
+        def always_blank(path, client):
+            raise Exception(BLANK_RESULT_ERROR)
+
+        j = self.make_job(always_blank, segment_list=[(0, 1800)])
+        j.run()
+
+        msgs = " ".join(m for _l, m in self.written_logs)
+        self.assertIn("空白結果", msgs)
+        # 落檔紀律：finish_reason 之類的細節不該落檔
+        self.assertNotIn("MALFORMED_RESPONSE", msgs)
+
+
+class TestRetryBudget(JobTestBase):
+    """重試次數的邊界。先前只用「累計 sleep 秒數」間接推斷，沒有直接斷言過嘗試次數。"""
+
+    def test_attempts_are_max_retries_plus_one(self):
+        """第一次是正常嘗試，之後才是重試，所以總嘗試次數是上限 + 1。"""
+        calls = []
+
+        def always_503(path, client):
+            calls.append(path)
+            raise Exception("503 UNAVAILABLE")
+
+        j = self.make_job(always_503, segment_list=[(0, 1800)])
+        j.run()
+
+        self.assertEqual(len(calls), job.config.MAX_AUTO_RETRIES + 1)
+        self.assertEqual(
+            self.sleeper.total,
+            job.config.MAX_AUTO_RETRIES * job.config.RETRY_WAIT_SECONDS,
+        )
+
+    def test_retry_budget_resets_per_segment(self):
+        """第 1 段用掉幾次重試，不能吃掉第 2 段的額度。"""
+        counts = {}
+
+        def flaky(path, client):
+            counts[path] = counts.get(path, 0) + 1
+            if _is_segment(path, 0) and counts[path] <= 3:
+                raise Exception("503 UNAVAILABLE")   # 第 1 段失敗 3 次後成功
+            if _is_segment(path, 1) and counts[path] <= 3:
+                raise Exception("503 UNAVAILABLE")   # 第 2 段同樣失敗 3 次
+            return "內容"
+
+        j = self.make_job(flaky)
+        j.run()
+
+        # 兩段都要成功——若額度是全域共用，第 2 段會被前一段用掉的次數拖垮
+        self.assertEqual(j.done_count, 2)
+        self.assertEqual(j.failed_count, 0)
+
+    def test_quota_error_mid_retry_aborts_immediately(self):
+        """重試途中冒出 429 要立刻中止，不能繼續把剩下的重試次數打完。"""
+        state = {"calls": 0}
+
+        def degrades(path, client):
+            state["calls"] += 1
+            if state["calls"] <= 2:
+                raise Exception("503 UNAVAILABLE")
+            raise Exception("429 RESOURCE_EXHAUSTED")
+
+        j = self.make_job(degrades, segment_list=[(0, 1800)])
+        with self.assertRaises(job.QuotaExhausted):
+            j.run()
+
+        # 兩次 503 + 一次 429 就停，不會用滿 MAX_AUTO_RETRIES + 1 次
+        self.assertEqual(state["calls"], 3)
+
+
 class TestManualRetry(JobTestBase):
     def test_ask_callback_used_when_auto_retry_off(self):
         state = {"calls": 0}
@@ -335,6 +443,86 @@ class TestManualRetry(JobTestBase):
         self.assertEqual(j.failed_count, 2)
         text = self.read_output(output_path)
         self.assertIn("使用者取消重試", text)
+
+    def test_manual_retry_has_no_cap(self):
+        """未勾自動重試時可無限重試直到成功或使用者取消（PITFALLS 明文）。
+
+        MAX_AUTO_RETRIES 只該套用在自動模式——若哪天被誤套到手動模式，
+        使用者明明一直按「是」卻在第 6 次被判失敗，這條會抓到。
+        """
+        over_cap = job.config.MAX_AUTO_RETRIES + 3
+        state = {"calls": 0}
+
+        def stubborn(path, client):
+            state["calls"] += 1
+            if state["calls"] <= over_cap:
+                raise Exception("503 UNAVAILABLE")
+            return "終於成功"
+
+        j = self.make_job(stubborn, segment_list=[(0, 1800)], auto_retry=False)
+        output_path = j.run()
+
+        self.assertEqual(j.failed_count, 0)
+        self.assertIn("終於成功", self.read_output(output_path))
+        self.assertEqual(len(self.recorded["asked"]), over_cap)
+        # 手動模式全程不 sleep（PITFALLS 明文禁令）
+        self.assertEqual(self.sleeper.total, 0)
+
+    def test_manual_retry_count_is_logged(self):
+        """手動模式的錯誤行要看得出重試過幾次。
+
+        原本 retry_count 只在自動分支遞增，手動模式每一行都寫「重試 0/5」——
+        使用者重試 1 次還是 20 次，log 長得一模一樣，事後完全查不出來；
+        而且「/5」暗示有上限，但手動模式根本沒有上限。
+        """
+        state = {"calls": 0}
+
+        def flaky(path, client):
+            state["calls"] += 1
+            if state["calls"] <= 3:
+                raise Exception("503 UNAVAILABLE")
+            return "成功內容"
+
+        j = self.make_job(flaky, segment_list=[(0, 1800)], auto_retry=False)
+        j.run()
+
+        err_lines = [m for lvl, m in self.written_logs if lvl == "ERROR"]
+        self.assertEqual(len(err_lines), 3)
+        # 三行必須彼此不同，才看得出重試進展
+        self.assertEqual(len(set(err_lines)), 3, err_lines)
+        # 手動模式不該出現自動模式的上限寫法
+        for line in err_lines:
+            self.assertNotIn(f"/{job.config.MAX_AUTO_RETRIES}", line)
+
+    def test_auto_retry_log_format_unchanged(self):
+        """自動模式的錯誤行格式維持 `重試 N/5`（ARCHITECTURE 有記，不要動）。"""
+        def always_503(path, client):
+            raise Exception("503 UNAVAILABLE")
+
+        j = self.make_job(always_503, segment_list=[(0, 1800)])
+        j.run()
+
+        err_lines = [m for lvl, m in self.written_logs if lvl == "ERROR"]
+        upload_lines = [m for m in err_lines if "上傳Gemini" in m]
+        self.assertEqual(len(upload_lines), job.config.MAX_AUTO_RETRIES + 1)
+        for i, line in enumerate(upload_lines):
+            self.assertIn(f"重試 {i}/{job.config.MAX_AUTO_RETRIES}", line)
+
+    def test_manual_blank_result_also_asks(self):
+        state = {"calls": 0}
+
+        def flaky(path, client):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise Exception(BLANK_RESULT_ERROR)
+            return "成功內容"
+
+        j = self.make_job(flaky, segment_list=[(0, 1800)], auto_retry=False)
+        j.run()
+
+        self.assertEqual(len(self.recorded["asked"]), 1)
+        self.assertIn("Gemini 回傳空白結果", self.recorded["asked"][0])
+        self.assertEqual(self.sleeper.total, 0)
 
 
 class TestRetryFailed(JobTestBase):
