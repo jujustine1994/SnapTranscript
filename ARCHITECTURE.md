@@ -10,18 +10,22 @@
 |------|------|
 | `Run SnapTranscript.bat` | 薄殼啟動器：只呼叫 launcher.ps1 |
 | `launcher.ps1` | 環境檢查、首次安裝說明、建立 venv、啟動主程式 |
-| `main.py` | 程式入口：banner + Tk root |
-| `config.py` | 全域常數（模型、切割長度、重試設定） |
-| `logger.py` | `logs/app.log` 落檔 |
+| `main.py` | 程式入口：banner + Tk root + 首次啟動的語言選擇視窗 |
+| `config.py` | 全域常數（模型、切割長度、重試設定）+ `config.json` 的讀寫 |
+| `i18n.py` | 介面文字的多語言查表（`t()`），語言清單 `LANGUAGES` |
+| `locales/` | 四份語言檔 `zh_tw.py` / `zh_cn.py` / `en.py` / `ja.py`，各 115 條，只匯出 `STRINGS` |
+| `logger.py` | `logs/app.log` 落檔（內容**固定繁中**，不跟介面語言走） |
 | `segments.py` | 時間字串解析 + 分段計算（純函式，`plan_segments()` 是進入點） |
 | `audio.py` | ffprobe 取時長 / ffmpeg 切割 / yt-dlp 下載 |
 | `transcriber.py` | Gemini 呼叫、prompt、錯誤分類 |
 | `job.py` | 轉錄流程編排（不 import tkinter，可獨立測試） |
 | `ui.py` | `SnapTranscriptApp` 主視窗 |
-| `tests/` | unittest 測試，111 個（`python -m unittest discover -s tests`）。四個檔案：`test_segments.py`（分段計算）、`test_transcriber.py`（Gemini 呼叫與錯誤分類）、`test_job.py`（轉錄流程編排）、`test_audio.py`（ffprobe / ffmpeg 包裝）。全部不需要 ffmpeg、網路或 API Key |
+| `tests/` | unittest 測試，124 個（`python -m unittest discover -s tests`）。五個檔案：`test_segments.py`（分段計算）、`test_transcriber.py`（Gemini 呼叫與錯誤分類）、`test_job.py`（轉錄流程編排）、`test_audio.py`（ffprobe / ffmpeg 包裝）、`test_i18n.py`（多語言七道防退化）。全部不需要 ffmpeg、網路或 API Key |
+| `scripts/transcript_golden.py` | 逐字稿輸出的逐 byte 回歸基準（`make` / `check`）。改動 `_write_output` 或它用到的字串前先存一份，改完比對 |
 | `requirements.txt` | Python 套件清單（google-genai、python-dotenv、yt-dlp） |
 | `.env` | API Key 儲存（不進版控） |
-| `.gitignore` | 排除 venv、.env、暫存檔 |
+| `config.json` | 使用者偏好，目前只有 `language`（不進版控） |
+| `.gitignore` | 排除 venv、.env、config.json、暫存檔 |
 
 ## 執行流程
 
@@ -149,6 +153,45 @@ Gemini 的 65,536 token 上限**被靜默截斷——逐字稿少一截，卻沒
 ＝ 34 分 59 秒，約 21,000 輸出 tokens，佔上限 32%，緩衝充裕。
 `tests/test_segments.py` 的 `test_merged_segment_never_exceeds_chunk_plus_threshold`
 守著這條不變式——之後若調大 `DEFAULT_CHUNK_SECONDS`，記得回頭檢查這個加總。
+
+## 多語言（i18n）
+
+介面支援 繁體中文／简体中文／English／日本語。**重開才生效，不做即時切換**
+（即時切換要建 widget 登記表逐一 `config(text=...)`，漏一個就是中英混雜，
+popup 還要額外處理，改動幅度大好幾倍）。
+
+- 語言存在 `config.json` 的 `language`。**預設是空字串**，才分得出「沒選過」
+  與「選了繁中」——填 `zh_tw` 就得再加一個 `language_chosen` 布林值，兩個
+  欄位描述同一件事遲早不同步
+- 首次啟動跳一次語言視窗（`main.pick_language_on_first_run`），視窗**刻意
+  不翻譯**：那時還不知道使用者要哪個語言，用任一種當說明都在賭
+- 之後隨時可在主視窗右上角的 `Language:` 下拉選單改，改完問要不要重啟
+- `i18n.set_lang()` 必須在建任何 widget **之前**呼叫（`SnapTranscriptApp.__init__`
+  裡）。`t()` 是建置時查一次表，設晚了介面會停在預設語言
+- 字型**刻意不指定**（`i18n.ui_font()` 建了但不呼叫）：指定下去會改變繁中
+  既有外觀。日後真的實測出日文假名顯示異常，才只對 `ja` 套用
+
+### 哪些字串**不**翻（是資料不是介面文字）
+
+判斷準則：**這個字串會不會被寫進檔案、或拿去跟檔案裡的值比對？會 → 是資料。**
+
+| 字串 | 位置 | 為什麼 |
+|---|---|---|
+| `=== 第 N 段（HH:MM:SS - HH:MM:SS）===` | `job._write_output` | 寫進 `_transcript.txt`。翻了的話同一個使用者切過語言前後兩份逐字稿對不起來，他自己的下游腳本也會斷 |
+| `[此段轉錄失敗：...，可於程式內重試]` 與其中的 `r.error` | `job._write_output` / `_mark_failed` | 同上。所以 `_mark_failed` 收 `reason`（存進 `r.error`，繁中）與 `ui_reason`（推 UI，走 `t()`）兩個參數 |
+| `transcriber.PROMPT` | `transcriber.py` | 送給 Gemini 的機器指令。逐字稿的語言跟著**音訊**走（prompt 第 2 條明寫），不是介面語言。接上介面語言的話使用者換個語言就把轉錄結果整個換掉，而且畫面上看不出來 |
+| `"Gemini 回傳空白結果"` | `transcriber.classify_error` | 同時是例外訊息**又是分類鍵**。一翻就自己把自己查斷：`classify_error` 回 `None` → 空白結果不再重試 → 直接中止整個任務，而且不報錯、測試也抓不到 |
+| `logs/app.log` 的全部內容 | `ui.py` / `job.py` 的 `write_log*` 呼叫點 | log 是給維護者除錯用的，跟著使用者語言變等於自廢 |
+
+這些在 `tests/test_i18n.py` 的 `LOG_LITERALS` / `DATA_LITERALS` 精確豁免集合裡
+逐條列出並附理由。**刻意不整檔豁免 `ui.py` / `job.py`**——那兩個檔是工具主體，
+整檔放行等於把防退化測試關掉。
+
+### 防退化測試（`tests/test_i18n.py`，13 條）
+
+四語 key 集合一致、placeholder 一致、主程式不得寫死中日文、掃描範圍真的涵蓋
+主程式、沒有東西遮蔽 `t`、四語各建置一次 GUI（殘留 key 0 且四語真的不同）、
+PROMPT 四語逐字相同、首次啟動語言視窗行為。
 
 ## 輸出格式
 

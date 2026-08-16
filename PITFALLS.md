@@ -115,3 +115,61 @@ uv pip install --upgrade yt-dlp --python venv\Scripts\python.exe
 **禁止：** 不要為了「保險」把 `yt-dlp` 在 `requirements.txt` 裡鎖版本——鎖死等於保證這個問題一定會發生，而且再也修不好。這是少數「不鎖比較安全」的套件。
 
 > 順帶一提：同樣的機制代表 `google-genai` 也不會被自動升級，所以不需要鎖版本防它。詳細調查見 `TODO.md`。
+
+---
+
+## `t = threading.Thread(...)` 會靜默遮蔽翻譯函式 `t`
+
+**問題：** `ui.py` 的 `_start()` 與 `_retry_failed()` 原本都寫
+`t = threading.Thread(...)`。導入 i18n 後模組頂端有 `from i18n import t`，
+那兩行就在函式作用域內把翻譯函式蓋掉了。
+
+**原因：** 遮蔽是**靜默**的。後面任何 `t("gui.xxx")` 會變成呼叫 Thread 物件
+（`TypeError`），或更糟——如果那行 `t = ...` 在呼叫之後，Python 會因為
+「函式內有指派」而把整個 `t` 視為區域變數，變成 `UnboundLocalError`。
+不管哪一種，畫面上都只是「某個功能按了沒反應」，很難聯想到是名稱撞到。
+
+**解法：** 導入 i18n **之前**先用 AST（不是 grep，雜訊太多）掃出所有叫 `t`
+的函式／參數／指派／迴圈變數，全部改名。本專案改成 `worker_thread`。
+`tests/test_i18n.py` 的 `test_nothing_shadows_the_translation_function`
+永久釘住。
+
+**禁止：** 在任何被掃描的檔案裡用 `t` 當變數名。
+
+---
+
+## 翻譯 `classify_error` 的比對字面會讓重試整條路徑靜默失效
+
+**問題：** `transcriber.py` 第 53 行拋出「Gemini 回傳空白結果（finish_reason:
+...）」，第 78 行用 `if "Gemini 回傳空白結果" in err_str` 判斷這個錯誤要不要
+重試。把前者 i18n 化（後者沒改，或兩者用了不同語言的表）就對不上了。
+
+**原因：** 那個字面**同時是例外訊息又是查表鍵**，是資料不是介面文字。
+對不上之後 `classify_error()` 回 `None` → `_transcribe_with_retry` 直接
+`raise` → 整個任務中止。**不會有任何錯誤訊息**指出真正的原因，既有測試餵的
+是繁中字面所以也照樣綠。
+
+**解法：** 維持寫死繁中，在 `tests/test_i18n.py` 的 `DATA_LITERALS` 精確
+豁免集合裡列出並附理由。
+
+**禁止：** 把 `transcriber.py` 的 `"Gemini 回傳空白結果"` /
+`"Gemini 伺服器回傳 503"` / `"空白結果"` 放進任何語言檔。
+
+---
+
+## 逐字稿檔案裡的文字翻了，使用者的檔案就對不起來
+
+**問題：** `job._write_output()` 寫進 `_transcript.txt` 的
+`=== 第 N 段（...）===` 與 `[此段轉錄失敗：...]` 看起來很像介面文字。
+
+**原因：** 它們**落進使用者的檔案**。翻了之後，同一個使用者切過語言，前後
+兩份逐字稿的段落標頭長得不一樣；他若寫過用 `=== 第` 切段的腳本，換個語言就
+全部失效。程式這邊完全不會報錯——`_write_output` 從記憶體重建整份檔案，
+從不回讀。
+
+**解法：** 段落標頭與佔位符固定繁中。連帶：`_mark_failed()` 收
+`reason`（存進 `r.error` → 進檔案，繁中）與 `ui_reason`（推 UI，走 `t()`）
+**兩個參數**，一個呼叫同時處理兩路。
+
+**禁止：** 只留一條字串同時當「存進 `r.error` 的值」和「畫面上顯示的字」。
+

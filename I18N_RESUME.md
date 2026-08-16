@@ -1,53 +1,56 @@
-# I18N_RESUME — SnapTranscript 多語言遷移續跑筆記
+# I18N_RESUME — SnapTranscript 多語言遷移（**已完成**）
 
-分支 `feat/i18n`（**不要合併回 master，不要 push**）。
-決定點裁決見 `C:\Users\CTH\Documents\Code\_i18n_migration\snaptranscript_decisions.md`。
+分支 `feat/i18n`。**尚未合併回 master，也沒有 push**——由使用者自己看過再合。
 
-## 現在停在哪
+遷移日期：2026-08-16。裁決依據：
+`C:\Users\CTH\Documents\Code\_i18n_migration\snaptranscript_decisions.md`。
 
-**批次 4 完成。** 已完成：
-- `897868d` 先前未提交的 `_position_window` 改動獨立 commit（與 i18n 無關）
-- `e78250b` 第 0 步：`ui.py` 兩處 `t = threading.Thread(...)` 改名 `worker_thread`
-- `12fe19f` `scripts/transcript_golden.py`（繁中基準 525 bytes / sha256 `67ff5089`）
-- `6771e24` 批次 1：i18n.py、空語言檔、config schema、Language combobox、首次啟動選語言
-- `a475722` 批次 3：`ui.py` 74 處字面走 t()，14 條 log 字面留原地
-- `ec7f1ed` 批次 4a：`job.py` 12 條走 t()，`_mark_failed` 加 `ui_reason` 拆兩路
-- `6d1ec90` 批次 4b：`segments.py` 11 條、`audio.py` 5 條、`transcriber.py` 1 條
+---
 
-母表 zh_tw 目前 **116 條 key**。
+## 結果
 
-## 下一步
+介面支援 **繁體中文／简体中文／English／日本語**，重開生效。
+母表 **115 條 key**，四語 key 集合與 placeholder 完全一致。
+測試 **111 → 124**（既有 111 條**一條都沒改**）。
 
-批次 5：產出 `locales/zh_cn.py` / `en.py` / `ja.py` 三份譯文。
+## commit 列表（依序）
 
-## 批次計畫
+| commit | 內容 |
+|---|---|
+| `897868d` | 先前未提交的 `_position_window` 改動獨立 commit（與 i18n 無關） |
+| `e78250b` | 第 0 步：`ui.py` 兩處 `t = threading.Thread(...)` 改名 `worker_thread` |
+| `12fe19f` | `scripts/transcript_golden.py` 逐字稿逐 byte 基準 + 本檔 |
+| `6771e24` | 批次 1：`i18n.py`、空語言檔、config schema、Language combobox、首次啟動選語言 |
+| `a475722` | 批次 3：`ui.py` 74 處字面走 `t()` |
+| `ec7f1ed` | 批次 4a：`job.py` 12 條，`_mark_failed` 加 `ui_reason` |
+| `6d1ec90` | 批次 4b：`segments.py` 11 條、`audio.py` 5 條、`transcriber.py` 1 條 |
+| `a303ab7` | 批次 5：简中／英文／日文譯文 |
+| `e61ffbb` | 批次 6：七道防退化測試（unittest + subTest） |
 
-- [x] 0-a 髒工作區獨立 commit
-- [x] 0   第 0 步 `t` 遮蔽改名
-- [x] 0-b `scripts/transcript_golden.py` 基準
-- [x] 1   i18n.py + 空語言檔 + config.py/config.json + 首次啟動選語言 + 主視窗 Language combobox + 重啟提示
-- [x] 2   **跳過**（輸出 TXT 段落標頭裁決為資料不翻；log 字串留原地靠精確豁免集合放行，禁止抽 logtext.py）
-- [x] 3   GUI 介面文字（ui.py 完成；job/segments/audio 的字串併入批次 4）
-- [x] 4   錯誤訊息（segments / audio / job / transcriber）
-- [ ] 5   简中／英／日譯文
-- [ ] 6   三道防退化測試（unittest + subTest）+ 文件
+（批次 2「輸出檔顯示文字」整批跳過——逐字稿的段落標頭裁決為資料，不翻。）
 
-## 硬性約束備忘
+## 驗收結果
 
-- 測試基準 **111 條**，指令 `./venv/Scripts/python.exe -m unittest discover -s tests -v`
-- 繁中行為必須與改前完全一樣
-- 輸出 `_transcript.txt` 的 `=== 第 N 段（...）===` 與 `[此段轉錄失敗：...]` **不翻**（資料）
-- `transcriber.PROMPT`、`classify_error` 的 `"Gemini 回傳空白結果"` **不翻、不改邏輯**
-- log 內容固定繁中
-- ALLOWLIST 用**精確字串豁免集合**，不整檔豁免 `ui.py` / `job.py`
-- 逐檔 `git add`，不要 `git add -A`
-- GUI smoke test 可用「共用隱藏 root + 每語言一個 Toplevel」（`SnapTranscriptApp`
-  收 `root` 參數、不是 `class App(tk.Tk)`，所以 lessons 6-b 的子行程解法用不上）
+| 項目 | 結果 |
+|---|---|
+| 完整測試 | 111 → **124**，全綠 |
+| 四語 GUI 建置 | 四語各 39 條 widget 文字，**殘留 key 0 條** |
+| 繁中行為不變 | 介面文字對遷移前逐字比對，**唯一差異是新增的 Language 列本身** |
+| 輸出檔 | 四語 byte 完全相同（`sha256 7d652917…`）；`r.error` 四語相同 |
+| key / placeholder | 四語各 115 條，集合與 placeholder 逐條一致 |
+| 首次啟動視窗 | 開得起來、點下去有存檔、第二次不再跳（測試涵蓋） |
+| 負向驗證 | 6 項全數會紅（見下） |
 
-## 批次 4 的已知難題（`job._mark_failed`）
+負向驗證（做完都已還原，`git status` 乾淨）：
+塞寫死中文常數 ✅紅／刪 `ja.py` 一個 key ✅紅／塞 `t` 區域變數 ✅紅／
+打錯 placeholder ✅紅／PROMPT 跟著語言走 ✅抓得到／關掉語言切換 ✅紅。
 
-`reason` 這條字串**同時**推 UI（要翻）與存進 `r.error`，而 `r.error` 會被
-`_write_output` 寫進 `_transcript.txt` 的失敗佔位符（**是資料，不翻**）。
-做法：`_mark_failed(r, status, ui_reason, log_reason)` 一次拆兩路——UI 走 `t()`，
-存進 `r.error` 的固定繁中。這是 lessons 第 13 條的形狀，簽名改動要**同一個
-commit** 改完呼叫端（lessons 第 15 條）。
+## 之後要記得的事
+
+- **語言檔未經母語者校對**，改 `locales/*.py` 的 value 不影響邏輯，
+  但不要動 key、要保留具名 placeholder
+- **四種語言的實際畫面還沒有人目視確認**（版面、日文字型）
+- 詳細待辦見 `TODO.md`「多語言（i18n）2026-08-16 遷移後留下的」
+- 不翻的字串與理由見 `ARCHITECTURE.md`「多語言（i18n）」章節
+- 踩到的三個坑見 `PITFALLS.md`（`t` 遮蔽、`classify_error` 比對字面、
+  逐字稿檔案裡的文字）

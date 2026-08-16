@@ -12,6 +12,32 @@
       「超長音訊實測數據」。轉錄用假函式，未花 API 額度
 - [ ] 超長音訊用真實 Gemini 呼叫跑完整份（會花 5+ 次額度，想驗證連續呼叫的穩定性再做）
 
+### 多語言（i18n）2026-08-16 遷移後留下的
+
+- [ ] **四種語言各開一次視窗目視確認版面**。程式面已驗（四語建置成功、
+      殘留 key 0 條），但**沒有人看過實際畫面**。兩個具體風險：
+      ① `ui.py` 的 `output_label` 寫死 `wraplength=220`（為了讓「開啟資料夾」
+      與「重試失敗的 N 段」兩顆按鈕能並排），英文的
+      "Retry 3 failed segment(s)" 比中文長約一倍，可能把那一列擠爆。
+      擠爆的話直接調大那個數值即可（純版面數值）
+      ② 日文假名的字型。目前**刻意不指定字型**（`i18n.ui_font()` 建了但不
+      呼叫），因為指定下去會改變繁中的既有外觀。若日文出現豆腐或字形怪異，
+      做法是**只對 `ja`** 套 Yu Gothic，繁中維持不動
+- [ ] **简中／英文／日文譯文請母語者校對**。三份都是 AI 產出。改
+      `locales/*.py` 的 value 不影響任何邏輯（程式一律用 key 比對），但
+      **不要動 key**，具名 placeholder（`{path}`、`{count}`…）要原樣保留，
+      否則 `tests/test_i18n.py` 會紅。可疑的幾條：
+      - `gui.msg.list_sep`：英文用 `", "`、其餘用「、」
+      - `gui.btn.retry_failed_n` 英文用 "segment(s)" 迴避單複數
+      - `gui.lbl.min_seg_prefix` / `min_seg_suffix` 是一句話被輸入框切成
+        前後兩半，英文語序跟中文不同，實際排出來可能不通順
+- [ ] **非繁中語言下，有三類訊息仍顯示繁體中文**（刻意的，但使用者會覺得怪）：
+      `transcriber.classify_error` 回傳的「Gemini 伺服器回傳 503」與
+      「Gemini 回傳空白結果」（是分類鍵＝資料，見 PITFALLS）、
+      逐字稿檔案裡的段落標頭與失敗佔位符、以及 `r.error` 的內容。
+      要修的話得先把 `classify_error` 改成用機器可讀的代碼分類（例外子類別
+      或 sentinel），那是邏輯變更，2026-08-16 明確判定不在 i18n 範圍內
+
 - [x] 對話框標題不再寫死「503 伺服器錯誤」（2026-08-01 修，改為中性的「轉錄失敗」）
 - [x] 補跑按鈕區分「失敗」與「未處理」（2026-08-01 修）
 
@@ -41,6 +67,29 @@
 - [x] 重試邏輯稽核：修掉手動模式錯誤行永遠寫「重試 0/5」的缺陷，
       並補上先前沒測到的四塊路徑（空白結果重試、實際嘗試次數、
       每段額度重置、手動模式無上限與重試中 429）
+
+## 目錄結構不符全域規範（2026-08-16 確認，刻意不動）
+
+`windows-tool.md` 要求 `.py` 收進 `src/`、MD 文件收進 `docs/`。本專案的
+`.py` 與 `README/ARCHITECTURE/CHANGELOG/PITFALLS/TODO` 全部在根目錄。
+
+搬移本身不難（`logger._find_project_root()` 往上找 `launcher.ps1`，兩種擺法
+都正確，日後搬 `src/` 不會壞），但要同步改 `launcher.ps1` 的呼叫路徑、
+`tests/*.py` 的 `sys.path.insert`、以及 `tests/test_i18n.py` 的 `SKIP_DIRS`。
+i18n 遷移期間刻意不做——混進來會讓那次的 diff 沒法看。
+
+順帶：`tests/` 缺 `__init__.py`（規範有列，目前靠各測試自己
+`sys.path.insert` 也能跑）。
+
+## 順手發現、還沒動的
+
+- `ui.py` 的 `_abort()` 用 `self._log(f"
+[ERROR] {e}")` 把例外物件整包推進
+  UI 記錄框。落檔那條已經正確（只記 `type(e).__name__`），但 UI 這條若是
+  google-genai 的例外，畫面上會出現完整 URL 與 response 片段——使用者截圖
+  求助時就外流了。規範只管落檔，這條不違規，但值得修
+- `docs/next-session-prompt.md` 與 `.superpowers/sdd/` 留了一堆上次 SDD 流程
+  的中間檔（review diff、task brief/report），沒清
 
 ## 設定介面現況
 
