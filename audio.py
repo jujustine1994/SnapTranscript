@@ -5,6 +5,8 @@ import subprocess
 
 import yt_dlp
 
+from i18n import t
+
 
 def get_audio_duration(audio_path: str) -> float:
     """用 ffprobe 取得音訊總時長（秒）。
@@ -15,10 +17,7 @@ def get_audio_duration(audio_path: str) -> float:
     （`stderr=subprocess.STDOUT`），錯誤訊息會混進要解析的數字裡。
     """
     if not os.path.exists(audio_path):
-        raise FileNotFoundError(
-            f"找不到音訊檔案：{audio_path}\n"
-            "檔案可能已被移動、刪除，或所在的隨身碟／網路磁碟已中斷。"
-        )
+        raise FileNotFoundError(t("err.audio.not_found", path=audio_path))
 
     cmd = [
         "ffprobe", "-v", "error",
@@ -29,18 +28,14 @@ def get_audio_duration(audio_path: str) -> float:
     try:
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except FileNotFoundError:
-        raise RuntimeError(
-            "找不到 ffprobe（ffmpeg 的一部分）。請確認 ffmpeg 已安裝並加入系統 PATH，"
-            "在命令列執行 `ffmpeg -version` 可以驗證。"
-        ) from None
+        raise RuntimeError(t("err.audio.no_ffprobe")) from None
 
     raw = result.stdout.strip()
     try:
         return float(raw)
     except ValueError:
         raise RuntimeError(
-            f"無法讀取音訊長度：{os.path.basename(audio_path)}\n"
-            "這個檔案可能不是有效的音訊／影片檔，或檔案已損毀。"
+            t("err.audio.bad_duration", name=os.path.basename(audio_path))
         ) from None
 
 
@@ -105,6 +100,6 @@ def download_youtube_audio(url: str, save_path: str, progress_callback=None) -> 
     audio_path = os.path.splitext(save_path)[0] + ".mp3"
 
     if not os.path.exists(audio_path):
-        raise FileNotFoundError(f"下載後找不到音訊檔案：{audio_path}")
+        raise FileNotFoundError(t("err.audio.download_missing", path=audio_path))
 
     return audio_path, title

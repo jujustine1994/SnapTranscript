@@ -5,7 +5,13 @@ import time
 from google import genai
 
 import config
+from i18n import t
 
+# ⚠ PROMPT 是**資料不是介面文字**，永遠不跟著介面語言走（見 i18n.py 的設計約束）。
+# 它是送給 Gemini 的機器指令，而且第 2 條明寫「依照說話者使用的語言直接轉錄
+# 原文」——逐字稿的語言跟著**音訊**走，跟使用者選了什麼介面語言完全無關。
+# 接上介面語言的話，使用者換個介面語言就把轉錄結果整個換掉，而且畫面上完全
+# 看不出來，要打開逐字稿才知道。
 PROMPT = """請仔細聆聽這段音訊，將所有說話內容以原始語言逐字轉錄。
 
 輸出規則：
@@ -32,7 +38,7 @@ def transcribe_segment(audio_path: str, client: genai.Client, sleep_fn=None) -> 
     if audio_file.state.name != "ACTIVE":
         # 這條路徑不刪檔：檔案沒進到 ACTIVE，Gemini 端本來就沒有可用的檔案資源，
         # 而 FAILED 狀態的檔案 Google 會自行回收（48 小時內）
-        raise Exception(f"Gemini 檔案處理失敗（狀態：{audio_file.state.name}），請重試")
+        raise Exception(t("err.gemini.file_failed", state=audio_file.state.name))
 
     try:
         response = client.models.generate_content(
@@ -49,6 +55,11 @@ def transcribe_segment(audio_path: str, client: genai.Client, sleep_fn=None) -> 
         finish_reason = None
         if response.candidates:
             finish_reason = response.candidates[0].finish_reason
+        # ⚠ 這條訊息**不可以 i18n 化**：下方 classify_error() 拿
+        # 「Gemini 回傳空白結果」這個字面去 `in err_str` 比對，決定這個錯誤
+        # 要不要重試。它同時是例外訊息又是分類鍵＝**資料**。一翻就自己把自己
+        # 查斷——classify_error 回 None、空白結果不再重試、直接中止整個任務，
+        # 而且不會有任何錯誤訊息，測試也抓不到。
         raise Exception(
             f"Gemini 回傳空白結果（finish_reason: {finish_reason}），"
             "可能因內容審查攔截或無法辨識音訊，請重試"

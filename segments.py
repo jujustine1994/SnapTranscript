@@ -3,6 +3,7 @@
 import re
 
 import config
+from i18n import t
 
 # HH:MM:SS 格式（小時可 1~2 位）。切割點與擷取範圍共用同一份，
 # 兩邊各留一份的話改格式時容易只改到一邊。
@@ -41,7 +42,7 @@ def parse_custom_cut_points(text: str) -> list[int]:
         if not line:
             continue
         if not TIME_PATTERN.match(line):
-            raise ValueError(f"格式錯誤：「{line}」，請使用 HH:MM:SS 格式（例如 00:22:30）")
+            raise ValueError(t("err.seg.bad_time_format", value=line, example="00:22:30"))
         points.append(hms_to_seconds(line))
     return sorted(set(points))
 
@@ -54,15 +55,15 @@ def parse_range(start_text: str, end_text: str) -> tuple[int, int]:
     start_text = start_text.strip()
     end_text = end_text.strip()
     if not start_text or not end_text:
-        raise ValueError("請輸入起始與結束時間")
+        raise ValueError(t("err.seg.range_required"))
     if not TIME_PATTERN.match(start_text):
-        raise ValueError(f"格式錯誤：「{start_text}」，請使用 HH:MM:SS 格式（例如 00:10:00）")
+        raise ValueError(t("err.seg.bad_time_format", value=start_text, example="00:10:00"))
     if not TIME_PATTERN.match(end_text):
-        raise ValueError(f"格式錯誤：「{end_text}」，請使用 HH:MM:SS 格式（例如 00:45:00）")
+        raise ValueError(t("err.seg.bad_time_format", value=end_text, example="00:45:00"))
     start_sec = hms_to_seconds(start_text)
     end_sec = hms_to_seconds(end_text)
     if start_sec >= end_sec:
-        raise ValueError("起始時間必須早於結束時間")
+        raise ValueError(t("err.seg.start_after_end"))
     return start_sec, end_sec
 
 
@@ -78,21 +79,18 @@ def parse_min_segment_minutes(
     """
     text = text.strip()
     if not text:
-        raise ValueError("請輸入尾巴合併門檻（分鐘），填 0 代表不合併")
+        raise ValueError(t("err.seg.min_required"))
     try:
         minutes = int(text)
     except ValueError:
         raise ValueError(
-            f"格式錯誤：「{text}」，請輸入整數分鐘（例如 5），填 0 代表不合併"
+            t("err.seg.min_bad_format", value=text)
         ) from None
     if minutes < 0:
-        raise ValueError("尾巴合併門檻不能是負數，填 0 代表不合併")
+        raise ValueError(t("err.seg.min_negative"))
     limit = chunk_seconds // 60
     if minutes >= limit:
-        raise ValueError(
-            f"尾巴合併門檻必須小於切割長度（{limit} 分鐘），"
-            f"否則合併後的段落會長到可能超出 Gemini 的輸出上限"
-        )
+        raise ValueError(t("err.seg.min_too_large", limit=limit))
     return minutes * 60
 
 
@@ -134,7 +132,7 @@ def plan_segments(
     if range_bounds is not None:
         range_start, range_end = range_bounds
         if range_start >= duration:
-            raise ValueError("擷取範圍超出音訊總長度，請重新設定")
+            raise ValueError(t("err.seg.range_beyond_audio"))
         range_end = min(range_end, duration)
     else:
         range_start, range_end = 0, duration
