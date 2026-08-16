@@ -2,6 +2,8 @@
 
 import os
 import queue
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -11,9 +13,19 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 from dotenv import load_dotenv, set_key
 from google import genai
 
+import i18n
 import job
 from audio import download_youtube_audio, get_audio_duration
-from config import DEFAULT_CHUNK_SECONDS, ENV_PATH, MIN_SEGMENT_SECONDS, MODEL_NAME
+from config import (
+    CONFIG_PATH,
+    DEFAULT_CHUNK_SECONDS,
+    ENV_PATH,
+    MIN_SEGMENT_SECONDS,
+    MODEL_NAME,
+    load_config,
+    save_config,
+)
+from i18n import t
 from logger import write_log, write_log_header
 from segments import (
     parse_custom_cut_points,
@@ -46,6 +58,11 @@ class SnapTranscriptApp:
         self.log_start_time = 0.0
 
         self._poll_after_id: str | None = None
+
+        self.cfg = load_config(CONFIG_PATH)
+        # 語言必須在建任何 widget 之前設好——t() 是建置時查一次表，設晚了
+        # 介面會停在預設語言（見 pattern_i18n.py 地雷「t() 不可在 import 時求值」）
+        i18n.set_lang(self.cfg.get("language"))
 
         self._build_ui()
         self._load_api_key()
@@ -100,13 +117,94 @@ class SnapTranscriptApp:
         job.cleanup_temp_files()
         self.root.destroy()
 
+    # ---- 語言 ----
+    def _build_language_row(self):
+        """主視窗第一列的語言選單（右對齊）。
+
+        這個工具沒有設定視窗（pattern_i18n.py 第 5 段假設有），所以語言列
+        直接放主視窗最上面。標籤固定英文 `Language:`、選項用各語言自稱——
+        任何語言下使用者都認得出哪個是哪個。選項由 i18n.LANGUAGES 動態生成，
+        日後新增語言這裡一個字都不必改。
+        """
+        lang_frame = ttk.Frame(self.root)
+        lang_frame.grid(row=0, column=0, sticky="e", padx=14, pady=(8, 0))
+        ttk.Label(lang_frame, text="Language:").pack(side="left", padx=(0, 6))
+
+        self._lang_choices = i18n.available_languages()
+        # ⚠ 讀 config 不讀 i18n.get_lang()：set_lang() 只在 __init__ 跑一次，
+        # 使用者選了新語言但按「稍後」不重啟時，runtime 語言還是舊的。用 runtime
+        # 值當基準的話，下次改語言會把他的選擇默默寫回去。
+        saved = self.cfg.get("language", "")
+        self._lang_saved_code = saved if i18n.is_supported(saved) else i18n.DEFAULT_LANG
+        names = [name for _, name in self._lang_choices]
+        current = next(
+            (n for c, n in self._lang_choices if c == self._lang_saved_code), names[0]
+        )
+        self.lang_var = tk.StringVar(value=current)
+        combo = ttk.Combobox(
+            lang_frame, textvariable=self.lang_var, values=names,
+            width=10, state="readonly",
+        )
+        combo.pack(side="left")
+        combo.bind("<<ComboboxSelected>>", self._on_language_selected)
+
+    def _selected_lang_code(self) -> str:
+        """把下拉選單顯示的名稱換回代號。取不到就維持原設定，不亂改。"""
+        chosen = self.lang_var.get()
+        for code, name in self._lang_choices:
+            if name == chosen:
+                return code
+        return self._lang_saved_code
+
+    def _on_language_selected(self, _event=None):
+        """選了語言就存檔，真的變更才問要不要重啟。"""
+        new_lang = self._selected_lang_code()
+        if new_lang == self._lang_saved_code:
+            return
+        self.cfg["language"] = new_lang
+        save_config(self.cfg, CONFIG_PATH)
+        self._lang_saved_code = new_lang
+        self._prompt_restart_for_language()
+
+    def _prompt_restart_for_language(self):
+        """語言變更後問是否重啟。
+
+        **重開才生效，不做即時切換。** 即時切換要建 widget 登記表逐一
+        config(text=...)，漏掉任何一個元件就是中英混雜，popup 還要額外處理，
+        改動幅度大好幾倍，換來的只是省一次重開。
+
+        視窗全英文：此刻介面還是舊語言、使用者要的是新語言，用任一方都尷尬。
+        """
+        if messagebox.askyesno(
+            "Language Changed",
+            "Restart the app to apply the new language.\n\nRestart now?",
+        ):
+            self._restart_app()
+
+    def _restart_app(self):
+        """起一個新行程再關掉自己。
+
+        不用 os.execv：Windows 上它會就地覆寫當前行程，tkinter 還沒釋放的
+        視窗 handle 可能殘留，看起來像關不掉的殭屍視窗。
+        """
+        try:
+            subprocess.Popen([sys.executable, *sys.argv], close_fds=True)
+        except OSError:
+            # 起不了新行程就什麼都不做——使用者下次自己開一樣會生效，
+            # 這裡把舊視窗關掉反而讓人以為程式壞了
+            return
+        job.cleanup_temp_files()
+        self.root.destroy()
+
     # ---- UI 建置 ----
     def _build_ui(self):
         pad = {"padx": 14, "pady": 6}
 
+        self._build_language_row()
+
         # 音訊來源
         frame_source = ttk.LabelFrame(self.root, text=" 音訊來源 ", padding=8)
-        frame_source.grid(row=0, column=0, sticky="ew", **pad)
+        frame_source.grid(row=1, column=0, sticky="ew", **pad)
         frame_source.columnconfigure(0, weight=1)
 
         # Radio：本地上傳 / YouTube 下載
@@ -170,7 +268,7 @@ class SnapTranscriptApp:
 
         # 擷取範圍
         self.frame_range = ttk.LabelFrame(self.root, text=" 擷取範圍 ", padding=8)
-        self.frame_range.grid(row=1, column=0, sticky="ew", **pad)
+        self.frame_range.grid(row=2, column=0, sticky="ew", **pad)
 
         ttk.Checkbutton(
             self.frame_range, text="只處理音訊的一部分",
@@ -200,7 +298,7 @@ class SnapTranscriptApp:
 
         # 切割設定
         self.frame_cut = ttk.LabelFrame(self.root, text=" 切割設定 ", padding=8)
-        self.frame_cut.grid(row=2, column=0, sticky="ew", **pad)
+        self.frame_cut.grid(row=3, column=0, sticky="ew", **pad)
         frame_cut = self.frame_cut
 
         self.cut_mode = tk.StringVar(value="auto")
@@ -238,7 +336,7 @@ class SnapTranscriptApp:
 
         # API Key
         self.frame_api = ttk.LabelFrame(self.root, text=" Gemini API Key ", padding=8)
-        self.frame_api.grid(row=3, column=0, sticky="ew", **pad)
+        self.frame_api.grid(row=4, column=0, sticky="ew", **pad)
 
         api_row = tk.Frame(self.frame_api)
         api_row.pack(anchor="w")
@@ -259,7 +357,7 @@ class SnapTranscriptApp:
 
         # 開始按鈕列（如何取得？ 左邊，開始轉錄 置中）
         frame_start = tk.Frame(self.root)
-        frame_start.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
+        frame_start.grid(row=5, column=0, sticky="ew", padx=14, pady=10)
         frame_start.columnconfigure(0, weight=1)
         frame_start.columnconfigure(1, weight=1)
         frame_start.columnconfigure(2, weight=1)
@@ -283,7 +381,7 @@ class SnapTranscriptApp:
 
         # 進度區
         frame_progress = ttk.LabelFrame(self.root, text=" 處理進度 ", padding=8)
-        frame_progress.grid(row=5, column=0, sticky="ew", padx=14, pady=(6, 14))
+        frame_progress.grid(row=6, column=0, sticky="ew", padx=14, pady=(6, 14))
 
         self.progress_label = ttk.Label(frame_progress, text="等待開始...")
         self.progress_label.pack(anchor="w")
@@ -296,7 +394,7 @@ class SnapTranscriptApp:
 
         # 輸出路徑 + 開啟資料夾
         frame_output = tk.Frame(self.root)
-        frame_output.grid(row=6, column=0, pady=(0, 12))
+        frame_output.grid(row=7, column=0, pady=(0, 12))
         # wraplength 220：兩顆按鈕（開啟資料夾 87 + 重試失敗的 N 段 ~100+）
         # 同時顯示時，長路徑改換行而非把視窗撐寬，見 task-9-report.md Finding 3
         self.output_label = ttk.Label(
