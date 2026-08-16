@@ -141,11 +141,12 @@ STRINGS: dict[str, str] = {
     "job.log.uploading":           "[{index}/{total}] 上傳至 Gemini，等待轉錄...",
     "job.log.segment_done":        "[{index}/{total}] 完成",
     "job.log.error":               "[錯誤] {reason}",
-    "job.log.auto_retrying":       "[{index}/{total}] 自動重試中...（{count}/{max}）",
+    # ⚠ 半形括號是刻意的：與遷移前逐字相同，test_job.py 有斷言比對
+    "job.log.auto_retrying":       "[{index}/{total}] 自動重試中... ({count}/{max})",
     "job.log.retrying":            "[{index}/{total}] 重試中...",
     "job.log.marked_failed":       "[{index}/{total}] {reason}，標記後繼續",
     "job.log.merging":             "\n合併逐字稿...",
-    "job.status.retry_wait":       "第 {index} 段重試中... {seconds} 秒（{count}/{max}）",
+    "job.status.retry_wait":       "第 {index} 段重試中... {seconds} 秒 ({count}/{max})",
     "job.msg.cut_failed":          "第 {index} 段切割失敗，請確認 ffmpeg 是否正常運作",
     "job.msg.quota_exhausted":     "已達 Gemini API 用量上限（可能是短時間內請求過多，或當日額度用盡）。"
                                    "已完成的段落已存檔，請稍後用「重試失敗的段落」補跑。",
