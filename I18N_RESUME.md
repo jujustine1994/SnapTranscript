@@ -5,17 +5,20 @@
 
 ## 現在停在哪
 
-**批次 3（ui.py）完成。** 已完成：
+**批次 4 完成。** 已完成：
 - `897868d` 先前未提交的 `_position_window` 改動獨立 commit（與 i18n 無關）
 - `e78250b` 第 0 步：`ui.py` 兩處 `t = threading.Thread(...)` 改名 `worker_thread`
 - `12fe19f` `scripts/transcript_golden.py`（繁中基準 525 bytes / sha256 `67ff5089`）
 - `6771e24` 批次 1：i18n.py、空語言檔、config schema、Language combobox、首次啟動選語言
 - `a475722` 批次 3：`ui.py` 74 處字面走 t()，14 條 log 字面留原地
+- `ec7f1ed` 批次 4a：`job.py` 12 條走 t()，`_mark_failed` 加 `ui_reason` 拆兩路
+- `6d1ec90` 批次 4b：`segments.py` 11 條、`audio.py` 5 條、`transcriber.py` 1 條
+
+母表 zh_tw 目前 **116 條 key**。
 
 ## 下一步
 
-批次 4：`job.py` → `segments.py` → `audio.py` → `transcriber.py` 的錯誤訊息，
-**一個檔一個 commit**。job.py 的 `_mark_failed` 難題見下方。
+批次 5：產出 `locales/zh_cn.py` / `en.py` / `ja.py` 三份譯文。
 
 ## 批次計畫
 
@@ -25,7 +28,7 @@
 - [x] 1   i18n.py + 空語言檔 + config.py/config.json + 首次啟動選語言 + 主視窗 Language combobox + 重啟提示
 - [x] 2   **跳過**（輸出 TXT 段落標頭裁決為資料不翻；log 字串留原地靠精確豁免集合放行，禁止抽 logtext.py）
 - [x] 3   GUI 介面文字（ui.py 完成；job/segments/audio 的字串併入批次 4）
-- [ ] 4   錯誤訊息（segments / audio / job）
+- [x] 4   錯誤訊息（segments / audio / job / transcriber）
 - [ ] 5   简中／英／日譯文
 - [ ] 6   三道防退化測試（unittest + subTest）+ 文件
 
