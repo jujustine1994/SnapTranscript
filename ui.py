@@ -49,8 +49,27 @@ class SnapTranscriptApp:
 
         self._build_ui()
         self._load_api_key()
+        self._position_window()
         self._poll_queue()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---- 視窗定位 ----
+    def _position_window(self):
+        """視窗置中並加寬，同時避免底部超出螢幕（被工作列切到）。"""
+        self.root.update_idletasks()
+        width = self.root.winfo_reqwidth() + 150
+        height = self.root.winfo_reqheight()
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+
+        x = max(0, (screen_w - width) // 2)
+        y = max(0, (screen_h - height) // 2 - 20)
+
+        taskbar_estimate = 48
+        if y + height > screen_h - taskbar_estimate:
+            y = max(0, screen_h - taskbar_estimate - height)
+
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
 
     # ---- 關閉視窗 ----
     def _on_close(self):
