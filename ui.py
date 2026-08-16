@@ -461,8 +461,8 @@ class SnapTranscriptApp:
         self.btn_retry_failed.pack_forget()
         self._log(f"\n開始補跑 {self._job.failed_count} 個失敗段落...")
 
-        t = threading.Thread(target=self._retry_worker, daemon=True)
-        t.start()
+        worker_thread = threading.Thread(target=self._retry_worker, daemon=True)
+        worker_thread.start()
 
     def _retry_worker(self):
         """背景執行緒：只跑失敗段落，成功後重新合併覆寫輸出檔。"""
@@ -590,13 +590,13 @@ class SnapTranscriptApp:
 
         auto_retry = self.auto_retry_var.get()
 
-        t = threading.Thread(
+        worker_thread = threading.Thread(
             target=self._worker,
             args=(source_info, cut_points, client, range_bounds, auto_retry,
                   min_segment_seconds),
             daemon=True,
         )
-        t.start()
+        worker_thread.start()
 
     def _worker(
         self,
