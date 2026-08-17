@@ -2,6 +2,8 @@
 
 import os
 import queue
+import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -11,9 +13,19 @@ from tkinter import ttk, filedialog, messagebox, scrolledtext
 from dotenv import load_dotenv, set_key
 from google import genai
 
+import i18n
 import job
 from audio import download_youtube_audio, get_audio_duration
-from config import DEFAULT_CHUNK_SECONDS, ENV_PATH, MIN_SEGMENT_SECONDS, MODEL_NAME
+from config import (
+    CONFIG_PATH,
+    DEFAULT_CHUNK_SECONDS,
+    ENV_PATH,
+    MIN_SEGMENT_SECONDS,
+    MODEL_NAME,
+    load_config,
+    save_config,
+)
+from i18n import t
 from logger import write_log, write_log_header
 from segments import (
     parse_custom_cut_points,
@@ -47,10 +59,34 @@ class SnapTranscriptApp:
 
         self._poll_after_id: str | None = None
 
+        self.cfg = load_config(CONFIG_PATH)
+        # 語言必須在建任何 widget 之前設好——t() 是建置時查一次表，設晚了
+        # 介面會停在預設語言（見 pattern_i18n.py 地雷「t() 不可在 import 時求值」）
+        i18n.set_lang(self.cfg.get("language"))
+
         self._build_ui()
         self._load_api_key()
+        self._position_window()
         self._poll_queue()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    # ---- 視窗定位 ----
+    def _position_window(self):
+        """視窗置中並加寬，同時避免底部超出螢幕（被工作列切到）。"""
+        self.root.update_idletasks()
+        width = self.root.winfo_reqwidth() + 150
+        height = self.root.winfo_reqheight()
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+
+        x = max(0, (screen_w - width) // 2)
+        y = max(0, (screen_h - height) // 2 - 20)
+
+        taskbar_estimate = 48
+        if y + height > screen_h - taskbar_estimate:
+            y = max(0, screen_h - taskbar_estimate - height)
+
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
 
     # ---- 關閉視窗 ----
     def _on_close(self):
@@ -62,11 +98,8 @@ class SnapTranscriptApp:
         """
         if self.is_running:
             if not messagebox.askyesno(
-                "任務進行中",
-                "轉錄還在進行中，現在關閉會中斷任務。\n\n"
-                "已完成的段落尚未寫檔，關閉後會遺失，\n"
-                "需要重新開始轉錄。\n\n"
-                "確定要關閉嗎？",
+                t("gui.dlg.closing.title"),
+                t("gui.dlg.closing.body"),
             ):
                 return
 
@@ -81,25 +114,106 @@ class SnapTranscriptApp:
         job.cleanup_temp_files()
         self.root.destroy()
 
+    # ---- 語言 ----
+    def _build_language_row(self):
+        """主視窗第一列的語言選單（右對齊）。
+
+        這個工具沒有設定視窗（pattern_i18n.py 第 5 段假設有），所以語言列
+        直接放主視窗最上面。標籤固定英文 `Language:`、選項用各語言自稱——
+        任何語言下使用者都認得出哪個是哪個。選項由 i18n.LANGUAGES 動態生成，
+        日後新增語言這裡一個字都不必改。
+        """
+        lang_frame = ttk.Frame(self.root)
+        lang_frame.grid(row=0, column=0, sticky="e", padx=14, pady=(8, 0))
+        ttk.Label(lang_frame, text="Language:").pack(side="left", padx=(0, 6))
+
+        self._lang_choices = i18n.available_languages()
+        # ⚠ 讀 config 不讀 i18n.get_lang()：set_lang() 只在 __init__ 跑一次，
+        # 使用者選了新語言但按「稍後」不重啟時，runtime 語言還是舊的。用 runtime
+        # 值當基準的話，下次改語言會把他的選擇默默寫回去。
+        saved = self.cfg.get("language", "")
+        self._lang_saved_code = saved if i18n.is_supported(saved) else i18n.DEFAULT_LANG
+        names = [name for _, name in self._lang_choices]
+        current = next(
+            (n for c, n in self._lang_choices if c == self._lang_saved_code), names[0]
+        )
+        self.lang_var = tk.StringVar(value=current)
+        combo = ttk.Combobox(
+            lang_frame, textvariable=self.lang_var, values=names,
+            width=10, state="readonly",
+        )
+        combo.pack(side="left")
+        combo.bind("<<ComboboxSelected>>", self._on_language_selected)
+
+    def _selected_lang_code(self) -> str:
+        """把下拉選單顯示的名稱換回代號。取不到就維持原設定，不亂改。"""
+        chosen = self.lang_var.get()
+        for code, name in self._lang_choices:
+            if name == chosen:
+                return code
+        return self._lang_saved_code
+
+    def _on_language_selected(self, _event=None):
+        """選了語言就存檔，真的變更才問要不要重啟。"""
+        new_lang = self._selected_lang_code()
+        if new_lang == self._lang_saved_code:
+            return
+        self.cfg["language"] = new_lang
+        save_config(self.cfg, CONFIG_PATH)
+        self._lang_saved_code = new_lang
+        self._prompt_restart_for_language()
+
+    def _prompt_restart_for_language(self):
+        """語言變更後問是否重啟。
+
+        **重開才生效，不做即時切換。** 即時切換要建 widget 登記表逐一
+        config(text=...)，漏掉任何一個元件就是中英混雜，popup 還要額外處理，
+        改動幅度大好幾倍，換來的只是省一次重開。
+
+        視窗全英文：此刻介面還是舊語言、使用者要的是新語言，用任一方都尷尬。
+        """
+        if messagebox.askyesno(
+            "Language Changed",
+            "Restart the app to apply the new language.\n\nRestart now?",
+        ):
+            self._restart_app()
+
+    def _restart_app(self):
+        """起一個新行程再關掉自己。
+
+        不用 os.execv：Windows 上它會就地覆寫當前行程，tkinter 還沒釋放的
+        視窗 handle 可能殘留，看起來像關不掉的殭屍視窗。
+        """
+        try:
+            subprocess.Popen([sys.executable, *sys.argv], close_fds=True)
+        except OSError:
+            # 起不了新行程就什麼都不做——使用者下次自己開一樣會生效，
+            # 這裡把舊視窗關掉反而讓人以為程式壞了
+            return
+        job.cleanup_temp_files()
+        self.root.destroy()
+
     # ---- UI 建置 ----
     def _build_ui(self):
         pad = {"padx": 14, "pady": 6}
 
+        self._build_language_row()
+
         # 音訊來源
-        frame_source = ttk.LabelFrame(self.root, text=" 音訊來源 ", padding=8)
-        frame_source.grid(row=0, column=0, sticky="ew", **pad)
+        frame_source = ttk.LabelFrame(self.root, text=t("gui.frame.source"), padding=8)
+        frame_source.grid(row=1, column=0, sticky="ew", **pad)
         frame_source.columnconfigure(0, weight=1)
 
         # Radio：本地上傳 / YouTube 下載
         radio_row = ttk.Frame(frame_source)
         radio_row.grid(row=0, column=0, sticky="w", pady=(0, 6))
         ttk.Radiobutton(
-            radio_row, text="本地上傳",
+            radio_row, text=t("gui.radio.local"),
             variable=self.source_mode, value="local",
             command=self._toggle_source_mode,
         ).pack(side="left", padx=(0, 16))
         ttk.Radiobutton(
-            radio_row, text="YouTube 下載",
+            radio_row, text=t("gui.radio.youtube"),
             variable=self.source_mode, value="youtube",
             command=self._toggle_source_mode,
         ).pack(side="left")
@@ -112,7 +226,7 @@ class SnapTranscriptApp:
         ttk.Entry(self.frame_local, textvariable=self.file_var, state="readonly").grid(
             row=0, column=0, sticky="ew", padx=(0, 8)
         )
-        ttk.Button(self.frame_local, text="選擇檔案", command=self._select_file).grid(
+        ttk.Button(self.frame_local, text=t("gui.btn.select_file"), command=self._select_file).grid(
             row=0, column=1
         )
 
@@ -120,73 +234,73 @@ class SnapTranscriptApp:
         self.frame_youtube = ttk.Frame(frame_source)
         self.frame_youtube.grid(row=1, column=0, sticky="ew")
         self.frame_youtube.columnconfigure(1, weight=1)
-        ttk.Label(self.frame_youtube, text="YouTube 網址：").grid(
+        ttk.Label(self.frame_youtube, text=t("gui.lbl.yt_url")).grid(
             row=0, column=0, sticky="w", padx=(0, 6)
         )
         ttk.Entry(self.frame_youtube, textvariable=self.yt_url_var).grid(
             row=0, column=1, columnspan=2, sticky="ew"
         )
-        ttk.Label(self.frame_youtube, text="儲存為：").grid(
+        ttk.Label(self.frame_youtube, text=t("gui.lbl.save_as")).grid(
             row=1, column=0, sticky="w", padx=(0, 6), pady=(6, 0)
         )
         ttk.Entry(self.frame_youtube, textvariable=self.yt_save_path_var, state="readonly").grid(
             row=1, column=1, sticky="ew", padx=(0, 8), pady=(6, 0)
         )
-        ttk.Button(self.frame_youtube, text="另存新檔", command=self._select_save_path).grid(
+        ttk.Button(self.frame_youtube, text=t("gui.btn.save_as"), command=self._select_save_path).grid(
             row=1, column=2, pady=(6, 0)
         )
         action_frame = ttk.Frame(self.frame_youtube)
         action_frame.grid(row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
         ttk.Radiobutton(
-            action_frame, text="下載後馬上轉錄",
+            action_frame, text=t("gui.radio.download_transcribe"),
             variable=self.yt_action, value="transcribe",
             command=self._update_btn_label,
         ).pack(side="left", padx=(0, 16))
         ttk.Radiobutton(
-            action_frame, text="只下載音訊（不需 API Key）",
+            action_frame, text=t("gui.radio.download_only"),
             variable=self.yt_action, value="download_only",
             command=self._update_btn_label,
         ).pack(side="left")
         self.frame_youtube.grid_remove()  # 預設隱藏
 
         # 擷取範圍
-        self.frame_range = ttk.LabelFrame(self.root, text=" 擷取範圍 ", padding=8)
-        self.frame_range.grid(row=1, column=0, sticky="ew", **pad)
+        self.frame_range = ttk.LabelFrame(self.root, text=t("gui.frame.range"), padding=8)
+        self.frame_range.grid(row=2, column=0, sticky="ew", **pad)
 
         ttk.Checkbutton(
-            self.frame_range, text="只處理音訊的一部分",
+            self.frame_range, text=t("gui.chk.range_enabled"),
             variable=self.range_enabled, command=self._toggle_range_mode,
         ).grid(row=0, column=0, sticky="w")
 
         self.frame_range_inputs = ttk.Frame(self.frame_range)
         self.frame_range_inputs.grid(row=1, column=0, sticky="w", padx=(20, 0), pady=(6, 0))
-        ttk.Label(self.frame_range_inputs, text="起始時間：").grid(row=0, column=0, sticky="w")
+        ttk.Label(self.frame_range_inputs, text=t("gui.lbl.range_start")).grid(row=0, column=0, sticky="w")
         ttk.Entry(self.frame_range_inputs, textvariable=self.range_start_var, width=10).grid(
             row=0, column=1, padx=(0, 16)
         )
-        ttk.Label(self.frame_range_inputs, text="結束時間：").grid(row=0, column=2, sticky="w")
+        ttk.Label(self.frame_range_inputs, text=t("gui.lbl.range_end")).grid(row=0, column=2, sticky="w")
         ttk.Entry(self.frame_range_inputs, textvariable=self.range_end_var, width=10).grid(
             row=0, column=3
         )
-        ttk.Label(self.frame_range_inputs, text="（HH:MM:SS，例如 00:10:00）").grid(
+        ttk.Label(self.frame_range_inputs, text=t("gui.lbl.time_format_hint")).grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(2, 0)
         )
         self.frame_range_inputs.grid_remove()  # 預設隱藏
 
         tk.Label(
             self.frame_range,
-            text="⚠️ 下方切割點為原始音訊的絕對時間，需落在此範圍內才會生效",
+            text=t("gui.lbl.range_note"),
             foreground="gray", font=("", 8),
         ).grid(row=2, column=0, sticky="w", pady=(6, 0))
 
         # 切割設定
-        self.frame_cut = ttk.LabelFrame(self.root, text=" 切割設定 ", padding=8)
-        self.frame_cut.grid(row=2, column=0, sticky="ew", **pad)
+        self.frame_cut = ttk.LabelFrame(self.root, text=t("gui.frame.cut"), padding=8)
+        self.frame_cut.grid(row=3, column=0, sticky="ew", **pad)
         frame_cut = self.frame_cut
 
         self.cut_mode = tk.StringVar(value="auto")
         ttk.Radiobutton(
-            frame_cut, text=f"自動（每 {DEFAULT_CHUNK_SECONDS // 60} 分鐘切一段）",
+            frame_cut, text=t("gui.radio.cut_auto", minutes=DEFAULT_CHUNK_SECONDS // 60),
             variable=self.cut_mode, value="auto", command=self._toggle_cut_mode,
         ).grid(row=0, column=0, sticky="w")
 
@@ -194,22 +308,22 @@ class SnapTranscriptApp:
         # 切到「自訂切割點」時整列 disable（自訂切點不做合併，見 segments.py）
         self.frame_min_seg = ttk.Frame(frame_cut)
         self.frame_min_seg.grid(row=1, column=0, sticky="w", padx=(20, 0), pady=(2, 0))
-        ttk.Label(self.frame_min_seg, text="└ 尾巴不足").pack(side="left")
+        ttk.Label(self.frame_min_seg, text=t("gui.lbl.min_seg_prefix")).pack(side="left")
         self.min_seg_var = tk.StringVar(value=str(MIN_SEGMENT_SECONDS // 60))
         self.entry_min_seg = ttk.Entry(
             self.frame_min_seg, textvariable=self.min_seg_var, width=4, justify="center"
         )
         self.entry_min_seg.pack(side="left", padx=4)
-        ttk.Label(self.frame_min_seg, text="分鐘就併入前一段（填 0 不合併）").pack(side="left")
+        ttk.Label(self.frame_min_seg, text=t("gui.lbl.min_seg_suffix")).pack(side="left")
 
         ttk.Radiobutton(
-            frame_cut, text="自訂切割點",
+            frame_cut, text=t("gui.radio.cut_custom"),
             variable=self.cut_mode, value="custom", command=self._toggle_cut_mode,
         ).grid(row=2, column=0, sticky="w", pady=(4, 0))
 
         self.frame_custom = ttk.Frame(frame_cut)
         self.frame_custom.grid(row=3, column=0, sticky="ew", padx=(20, 0), pady=(6, 0))
-        ttk.Label(self.frame_custom, text="輸入切割時間點（HH:MM:SS，每行一個）：").pack(anchor="w")
+        ttk.Label(self.frame_custom, text=t("gui.lbl.custom_points")).pack(anchor="w")
         self.cut_text = scrolledtext.ScrolledText(
             self.frame_custom, width=28, height=5, font=("Consolas", 10)
         )
@@ -219,54 +333,54 @@ class SnapTranscriptApp:
 
         # API Key
         self.frame_api = ttk.LabelFrame(self.root, text=" Gemini API Key ", padding=8)
-        self.frame_api.grid(row=3, column=0, sticky="ew", **pad)
+        self.frame_api.grid(row=4, column=0, sticky="ew", **pad)
 
         api_row = tk.Frame(self.frame_api)
         api_row.pack(anchor="w")
         self.api_var = tk.StringVar()
         self.api_entry = ttk.Entry(api_row, textvariable=self.api_var, width=40, show="•")
         self.api_entry.pack(side="left", padx=(0, 8))
-        ttk.Button(api_row, text="顯示", width=5, command=self._toggle_api_show).pack(
+        ttk.Button(api_row, text=t("gui.btn.show"), width=5, command=self._toggle_api_show).pack(
             side="left", padx=(0, 8)
         )
         self.save_key_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(api_row, text="記住", variable=self.save_key_var).pack(side="left")
+        ttk.Checkbutton(api_row, text=t("gui.chk.remember"), variable=self.save_key_var).pack(side="left")
 
         tk.Label(
             self.frame_api,
-            text="🔒 API Key 僅儲存於本機 .env 檔，請勿將 Key 提供給他人。",
+            text=t("gui.lbl.api_notice"),
             foreground="gray", font=("", 8),
         ).pack(anchor="w", pady=(4, 0))
 
         # 開始按鈕列（如何取得？ 左邊，開始轉錄 置中）
         frame_start = tk.Frame(self.root)
-        frame_start.grid(row=4, column=0, sticky="ew", padx=14, pady=10)
+        frame_start.grid(row=5, column=0, sticky="ew", padx=14, pady=10)
         frame_start.columnconfigure(0, weight=1)
         frame_start.columnconfigure(1, weight=1)
         frame_start.columnconfigure(2, weight=1)
 
         link = tk.Label(
-            frame_start, text="如何取得 API Key？",
+            frame_start, text=t("gui.link.api_help"),
             foreground="#0078D4", cursor="hand2", font=("", 9, "underline")
         )
         link.grid(row=0, column=0, sticky="w")
         link.bind("<Button-1>", lambda e: self._show_api_help())
 
         self.btn_start = ttk.Button(
-            frame_start, text="▶  開始轉錄", command=self._start, width=20
+            frame_start, text=t("gui.btn.start_transcribe"), command=self._start, width=20
         )
         self.btn_start.grid(row=0, column=1, ipady=6)
 
         ttk.Checkbutton(
-            frame_start, text="自動重試", variable=self.auto_retry_var,
+            frame_start, text=t("gui.chk.auto_retry"), variable=self.auto_retry_var,
         ).grid(row=0, column=2, sticky="w", padx=(10, 0))
 
 
         # 進度區
-        frame_progress = ttk.LabelFrame(self.root, text=" 處理進度 ", padding=8)
-        frame_progress.grid(row=5, column=0, sticky="ew", padx=14, pady=(6, 14))
+        frame_progress = ttk.LabelFrame(self.root, text=t("gui.frame.progress"), padding=8)
+        frame_progress.grid(row=6, column=0, sticky="ew", padx=14, pady=(6, 14))
 
-        self.progress_label = ttk.Label(frame_progress, text="等待開始...")
+        self.progress_label = ttk.Label(frame_progress, text=t("gui.status.idle"))
         self.progress_label.pack(anchor="w")
         self.progress_bar = ttk.Progressbar(frame_progress, mode="determinate")
         self.progress_bar.pack(fill="x", pady=(4, 8))
@@ -277,7 +391,7 @@ class SnapTranscriptApp:
 
         # 輸出路徑 + 開啟資料夾
         frame_output = tk.Frame(self.root)
-        frame_output.grid(row=6, column=0, pady=(0, 12))
+        frame_output.grid(row=7, column=0, pady=(0, 12))
         # wraplength 220：兩顆按鈕（開啟資料夾 87 + 重試失敗的 N 段 ~100+）
         # 同時顯示時，長路徑改換行而非把視窗撐寬，見 task-9-report.md Finding 3
         self.output_label = ttk.Label(
@@ -285,17 +399,17 @@ class SnapTranscriptApp:
         )
         self.output_label.pack(side="left", padx=(0, 8))
         self.btn_open_folder = ttk.Button(
-            frame_output, text="開啟資料夾", command=self._open_output_folder
+            frame_output, text=t("gui.btn.open_folder"), command=self._open_output_folder
         )
         # 預設隱藏，完成後才顯示
         self.btn_retry_failed = ttk.Button(
-            frame_output, text="重試失敗的段落", command=self._retry_failed
+            frame_output, text=t("gui.btn.retry_failed"), command=self._retry_failed
         )
         # 預設隱藏，有失敗段落時才顯示
 
         # 初始引導文字
         self.log_text.config(state="normal")
-        self.log_text.insert("1.0", "請選擇音訊來源，設定完成後按「開始」。\n")
+        self.log_text.insert("1.0", t("gui.log.intro"))
         self.log_text.config(state="disabled")
 
         self.root.columnconfigure(0, weight=1)
@@ -303,21 +417,15 @@ class SnapTranscriptApp:
     # ---- UI 互動 ----
     def _show_api_help(self):
         win = tk.Toplevel(self.root)
-        win.title("如何取得 Gemini API Key")
+        win.title(t("gui.dlg.api_help.title"))
         win.resizable(False, False)
         win.grab_set()  # 鎖定焦點在此視窗
 
         pad = {"padx": 20, "pady": 6}
 
-        ttk.Label(win, text="申請步驟", font=("", 11, "bold")).pack(anchor="w", padx=20, pady=(16, 4))
+        ttk.Label(win, text=t("gui.dlg.api_help.steps"), font=("", 11, "bold")).pack(anchor="w", padx=20, pady=(16, 4))
 
-        steps = [
-            "1. 點擊下方連結，前往 Google AI Studio",
-            "2. 使用 Google 帳號登入",
-            "3. 點擊「Create API key」",
-            "4. 選擇「Create API key in new project」",
-            "5. 複製產生的 Key，貼入 SnapTranscript 的 API Key 欄位",
-        ]
+        steps = [t(f"gui.dlg.api_help.step{i}") for i in range(1, 6)]
         for step in steps:
             ttk.Label(win, text=step, justify="left").pack(anchor="w", **pad)
 
@@ -326,9 +434,7 @@ class SnapTranscriptApp:
         notice_frame.pack(fill="x", padx=20, pady=(8, 4))
         tk.Label(
             notice_frame,
-            text="⚠️  注意：申請後請確認 API Key 狀態顯示為「Free tier」，\n"
-                 "若顯示「Set up billing」代表尚未啟用免費方案，\n"
-                 "請勿輸入信用卡，直接使用即可享有免費額度。",
+            text=t("gui.dlg.api_help.notice"),
             justify="left", background="#FFF3CD", foreground="#856404"
         ).pack(anchor="w")
 
@@ -339,7 +445,7 @@ class SnapTranscriptApp:
         link.pack(anchor="w", padx=20, pady=(4, 16))
         link.bind("<Button-1>", lambda e: webbrowser.open(url))
 
-        ttk.Button(win, text="關閉", command=win.destroy).pack(pady=(0, 16))
+        ttk.Button(win, text=t("gui.btn.close"), command=win.destroy).pack(pady=(0, 16))
 
     def _toggle_cut_mode(self):
         is_custom = self.cut_mode.get() == "custom"
@@ -385,12 +491,12 @@ class SnapTranscriptApp:
             self.source_mode.get() == "youtube" and self.yt_action.get() == "download_only"
         )
         if is_download_only:
-            self.btn_start.config(text="▶  開始下載")
+            self.btn_start.config(text=t("gui.btn.start_download"))
             self._set_widgets_state(self.frame_range, "disabled")
             self._set_widgets_state(self.frame_cut, "disabled")
             self._set_widgets_state(self.frame_api, "disabled")
         else:
-            self.btn_start.config(text="▶  開始轉錄")
+            self.btn_start.config(text=t("gui.btn.start_transcribe"))
             self._set_widgets_state(self.frame_range, "normal")
             self._set_widgets_state(self.frame_cut, "normal")
             self._set_widgets_state(self.frame_api, "normal")
@@ -408,23 +514,23 @@ class SnapTranscriptApp:
         「重試失敗的 N 段」會讓使用者以為錯了 N 次。
         """
         if self._job is None:
-            return "重試失敗的段落"
+            return t("gui.btn.retry_failed")
         n = self._job.failed_count
         if self._job.pending_count > 0:
-            return f"繼續未完成的 {n} 段"
-        return f"重試失敗的 {n} 段"
+            return t("gui.btn.continue_unfinished", count=n)
+        return t("gui.btn.retry_failed_n", count=n)
 
     def _unfinished_wording(self) -> str:
         """「部分完成」對話框裡描述未完成段落的措辭。"""
         if self._job is None:
-            return "部分段落未完成"
+            return t("gui.msg.unfinished_generic")
         failed, pending = self._job.attempted_failed_count, self._job.pending_count
         parts = []
         if failed:
-            parts.append(f"{failed} 段失敗")
+            parts.append(t("gui.msg.n_failed", count=failed))
         if pending:
-            parts.append(f"{pending} 段未處理")
-        return "、".join(parts) or "部分段落未完成"
+            parts.append(t("gui.msg.n_pending", count=pending))
+        return t("gui.msg.list_sep").join(parts) or t("gui.msg.unfinished_generic")
 
     def _retry_failed(self):
         """只補跑失敗的段落（背景執行緒）。"""
@@ -432,18 +538,18 @@ class SnapTranscriptApp:
             return
         if not os.path.exists(self._job.audio_path):
             messagebox.showerror(
-                "找不到音訊檔",
-                f"原始音訊已不存在，無法補跑：\n{self._job.audio_path}",
+                t("gui.dlg.audio_missing.title"),
+                t("gui.dlg.audio_missing.body", path=self._job.audio_path),
             )
             return
 
         self.is_running = True
         self.btn_start.config(state="disabled")
         self.btn_retry_failed.pack_forget()
-        self._log(f"\n開始補跑 {self._job.failed_count} 個失敗段落...")
+        self._log(t("gui.log.retry_start", count=self._job.failed_count))
 
-        t = threading.Thread(target=self._retry_worker, daemon=True)
-        t.start()
+        worker_thread = threading.Thread(target=self._retry_worker, daemon=True)
+        worker_thread.start()
 
     def _retry_worker(self):
         """背景執行緒：只跑失敗段落，成功後重新合併覆寫輸出檔。"""
@@ -454,7 +560,7 @@ class SnapTranscriptApp:
                 f"{self._job.failed_count}段"
             )
             output_path = self._job.retry_failed()
-            self._log(f"\n逐字稿已更新：{output_path}")
+            self._log(t("gui.log.transcript_updated", path=output_path))
             self._finalize_log_file(success=self._job.failed_count == 0)
             self._done(output_path, success=True, failed_count=self._job.failed_count)
         except job.QuotaExhausted as e:
@@ -465,19 +571,20 @@ class SnapTranscriptApp:
 
     def _select_save_path(self):
         path = filedialog.asksaveasfilename(
-            title="選擇儲存位置與檔名",
+            title=t("gui.dlg.save_title"),
             defaultextension=".mp3",
-            filetypes=[("MP3 音訊", "*.mp3"), ("所有檔案", "*.*")],
+            filetypes=[(t("gui.filetype.mp3"), "*.mp3"), (t("gui.filetype.all"), "*.*")],
         )
         if path:
             self.yt_save_path_var.set(path)
 
     def _select_file(self):
         path = filedialog.askopenfilename(
-            title="選擇音訊檔案",
+            title=t("gui.dlg.open_title"),
             filetypes=[
-                ("音訊檔案", "*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.wma *.mp4 *.mov *.mkv"),
-                ("所有檔案", "*.*"),
+                (t("gui.filetype.audio"),
+                 "*.mp3 *.wav *.m4a *.aac *.flac *.ogg *.wma *.mp4 *.mov *.mkv"),
+                (t("gui.filetype.all"), "*.*"),
             ],
         )
         if path:
@@ -497,17 +604,17 @@ class SnapTranscriptApp:
         if self.source_mode.get() == "local":
             audio_path = self.file_var.get()
             if not audio_path:
-                messagebox.showerror("錯誤", "請先選擇音訊檔案")
+                messagebox.showerror(t("gui.dlg.error.title"), t("gui.msg.no_file"))
                 return
             source_info = {"mode": "local", "path": audio_path, "action": "transcribe"}
         else:
             url = self.yt_url_var.get().strip()
             save_path = self.yt_save_path_var.get().strip()
             if not url:
-                messagebox.showerror("錯誤", "請輸入 YouTube 網址")
+                messagebox.showerror(t("gui.dlg.error.title"), t("gui.msg.no_url"))
                 return
             if not save_path:
-                messagebox.showerror("錯誤", "請點「另存新檔」選擇儲存位置與檔名")
+                messagebox.showerror(t("gui.dlg.error.title"), t("gui.msg.no_save_path"))
                 return
             source_info = {"mode": "youtube", "url": url, "save_path": save_path,
                            "action": self.yt_action.get()}
@@ -522,14 +629,14 @@ class SnapTranscriptApp:
                 try:
                     cut_points = parse_custom_cut_points(self.cut_text.get("1.0", "end"))
                 except ValueError as e:
-                    messagebox.showerror("格式錯誤", str(e))
+                    messagebox.showerror(t("gui.dlg.format_error.title"), str(e))
                     return
             else:
                 # 尾巴合併門檻只在自動模式讀取，自訂模式不套用
                 try:
                     min_segment_seconds = parse_min_segment_minutes(self.min_seg_var.get())
                 except ValueError as e:
-                    messagebox.showerror("格式錯誤", str(e))
+                    messagebox.showerror(t("gui.dlg.format_error.title"), str(e))
                     return
 
         # 解析擷取範圍（只下載模式不需要）
@@ -540,13 +647,13 @@ class SnapTranscriptApp:
                     self.range_start_var.get(), self.range_end_var.get()
                 )
             except ValueError as e:
-                messagebox.showerror("格式錯誤", str(e))
+                messagebox.showerror(t("gui.dlg.format_error.title"), str(e))
                 return
 
         # 儲存 API Key（只下載模式不需要）
         if not download_only:
             if not api_key:
-                messagebox.showerror("錯誤", "請輸入 Gemini API Key")
+                messagebox.showerror(t("gui.dlg.error.title"), t("gui.msg.no_api_key"))
                 return
             if self.save_key_var.get():
                 set_key(ENV_PATH, "GEMINI_API_KEY", api_key)
@@ -561,7 +668,7 @@ class SnapTranscriptApp:
         self.btn_open_folder.pack_forget()
         self.btn_retry_failed.pack_forget()
         self.progress_bar["value"] = 0
-        self.progress_label.config(text="準備中...")
+        self.progress_label.config(text=t("gui.status.preparing"))
         self.is_running = True
         self.btn_start.config(state="disabled")
         # 新任務開始前清掉上一個 job：若前置檢查（讀取音訊/切段）在
@@ -571,13 +678,13 @@ class SnapTranscriptApp:
 
         auto_retry = self.auto_retry_var.get()
 
-        t = threading.Thread(
+        worker_thread = threading.Thread(
             target=self._worker,
             args=(source_info, cut_points, client, range_bounds, auto_retry,
                   min_segment_seconds),
             daemon=True,
         )
-        t.start()
+        worker_thread.start()
 
     def _worker(
         self,
@@ -615,7 +722,7 @@ class SnapTranscriptApp:
             )
             output_path = self._job.run()
 
-            self._log(f"\n逐字稿已儲存：{output_path}")
+            self._log(t("gui.log.transcript_saved", path=output_path))
             self._finalize_log_file(success=self._job.failed_count == 0)
             self._done(output_path, success=True, failed_count=self._job.failed_count)
 
@@ -634,12 +741,12 @@ class SnapTranscriptApp:
         if source_info["mode"] != "youtube":
             return source_info["path"]
 
-        self._log("正在下載 YouTube 音訊，請稍候...")
+        self._log(t("gui.log.downloading"))
         audio_path, _ = download_youtube_audio(
             source_info["url"], source_info["save_path"],
             progress_callback=self._download_progress,
         )
-        self._log(f"下載完成：{os.path.basename(audio_path)}")
+        self._log(t("gui.log.download_done", name=os.path.basename(audio_path)))
 
         if source_info["action"] == "download_only":
             # 只下載：任務起始行只記檔名，不記完整 URL
@@ -658,12 +765,14 @@ class SnapTranscriptApp:
             mb_total = total / 1024 / 1024
             self._set_progress(
                 pct, 100,
-                f"下載中... {pct}%  ({mb_done:.1f} / {mb_total:.1f} MB{speed_str})",
+                t("gui.status.downloading_pct", percent=pct, done=f"{mb_done:.1f}",
+                  total=f"{mb_total:.1f}", speed=speed_str),
             )
         else:
             # 沒有 total 的串流：只顯示已下載量，進度條停在 0
             mb = downloaded / 1024 / 1024
-            self._set_progress(0, 100, f"下載中... {mb:.1f} MB{speed_str}")
+            self._set_progress(0, 100, t("gui.status.downloading_size",
+                                        done=f"{mb:.1f}", speed=speed_str))
 
     def _plan_and_announce(
         self,
@@ -674,9 +783,9 @@ class SnapTranscriptApp:
         auto_retry: bool,
     ) -> list[tuple[int, int]]:
         """讀時長、算分段、寫任務起始行，回傳分段清單。"""
-        self._log(f"讀取音訊：{os.path.basename(audio_path)}")
+        self._log(t("gui.log.reading_audio", name=os.path.basename(audio_path)))
         total_duration = get_audio_duration(audio_path)
-        self._log(f"總時長：{seconds_to_hms(total_duration)}")
+        self._log(t("gui.log.total_duration", duration=seconds_to_hms(total_duration)))
 
         # 自動切點與範圍夾擠的邏輯在 segments.plan_segments，放在那裡才測得到
         segment_list, range_start, range_end = plan_segments(
@@ -685,7 +794,8 @@ class SnapTranscriptApp:
         )
         if range_bounds is not None:
             self._log(
-                f"擷取範圍：{seconds_to_hms(range_start)} → {seconds_to_hms(range_end)}"
+                t("gui.log.range", start=seconds_to_hms(range_start),
+                  end=seconds_to_hms(range_end))
             )
 
         # 任務起始行：檔名 + 模型 + 段數 + 重試設定，全塞同一行（不記 URL）
@@ -693,8 +803,9 @@ class SnapTranscriptApp:
             f"轉錄 {os.path.basename(audio_path)} | {MODEL_NAME} | "
             f"{len(segment_list)}段 | 自動重試:{'開' if auto_retry else '關'}"
         )
-        self._log(f"共 {len(segment_list)} 段，開始處理...")
-        self._set_progress(0, len(segment_list), f"0 / {len(segment_list)} 段完成")
+        self._log(t("gui.log.segments_planned", count=len(segment_list)))
+        self._set_progress(0, len(segment_list),
+                          t("job.status.segments_done", done=0, total=len(segment_list)))
         return segment_list
 
     def _abort(self, e: Exception, log_label: str | None):
@@ -767,7 +878,7 @@ class SnapTranscriptApp:
                     question, reply_event, reply_holder = data
                     # 標題保持中性：這個 dialog 不只用於 503，Gemini 回傳空白結果
                     # 也走同一條路。實際原因寫在 question 裡。
-                    reply_holder[0] = messagebox.askyesno("轉錄失敗", question)
+                    reply_holder[0] = messagebox.askyesno(t("gui.dlg.transcribe_failed.title"), question)
                     reply_event.set()
                 elif msg_type == "done":
                     output_path, success, download_only, failed_count = data
@@ -778,41 +889,46 @@ class SnapTranscriptApp:
                         self.btn_open_folder.pack(side="left")
                         if download_only:
                             self.output_label.config(
-                                text=f"已下載：{output_path}", foreground="green"
+                                text=t("gui.lbl.downloaded", path=output_path),
+                                foreground="green"
                             )
-                            messagebox.showinfo("下載完成", f"音訊已儲存至：\n{output_path}")
+                            messagebox.showinfo(t("gui.dlg.download_done.title"),
+                                                t("gui.dlg.download_done.body",
+                                                  path=output_path))
                         elif failed_count > 0:
                             total = self._job.total
                             ok = total - failed_count
                             self.output_label.config(
-                                text=f"輸出：{output_path}（{ok}/{total} 段成功）",
+                                text=t("gui.lbl.output_partial", path=output_path,
+                                       ok=ok, total=total),
                                 foreground="#b8860b",
                             )
                             self.btn_retry_failed.config(text=self._retry_button_text())
                             self.btn_retry_failed.pack(side="left", padx=(6, 0))
                             messagebox.showwarning(
-                                "部分完成",
-                                f"逐字稿已儲存（{ok}/{total} 段成功，"
-                                f"{self._unfinished_wording()}）：\n"
-                                f"{output_path}\n\n"
-                                "未完成的段落在檔案中標記為佔位符，"
-                                f"可按「{self._retry_button_text()}」補跑。",
+                                t("gui.dlg.partial.title"),
+                                t("gui.dlg.partial.body", ok=ok, total=total,
+                                  detail=self._unfinished_wording(),
+                                  path=output_path,
+                                  button=self._retry_button_text()),
                             )
                         else:
                             self.btn_retry_failed.pack_forget()
                             self.output_label.config(
-                                text=f"輸出：{output_path}", foreground="green"
+                                text=t("gui.lbl.output", path=output_path),
+                                foreground="green"
                             )
-                            messagebox.showinfo("完成", f"逐字稿已儲存：\n{output_path}")
+                            messagebox.showinfo(t("gui.dlg.done.title"),
+                                                t("gui.dlg.done.body", path=output_path))
                     else:
-                        self.progress_label.config(text="發生錯誤，請查看上方記錄")
+                        self.progress_label.config(text=t("gui.status.error"))
                         if output_path:
                             # 中止前已完成的段落仍先存了檔（見 job.py 的中止保護），
                             # 使用者要能找到這份部分逐字稿，不能讓它悄悄躺在磁碟上
                             self._last_output_path = output_path
                             self.btn_open_folder.pack(side="left")
                             self.output_label.config(
-                                text=f"輸出（部分完成）：{output_path}",
+                                text=t("gui.lbl.output_aborted", path=output_path),
                                 foreground="#b8860b",
                             )
                         if failed_count > 0:

@@ -12,6 +12,7 @@ from typing import Callable
 import audio
 import config
 import logger
+from i18n import t
 import segments as segmod
 import transcriber
 
@@ -151,7 +152,8 @@ class TranscriptionJob:
                 self._process_one(r)
                 self.cb.progress(
                     self.done_count, self.total,
-                    f"{self.done_count} / {self.total} 段完成",
+                    t("job.status.segments_done",
+                      done=self.done_count, total=self.total),
                 )
         except QuotaExhausted:
             # 配額用盡要中止，但已完成的段落先寫檔，不能整份丟掉
@@ -167,7 +169,8 @@ class TranscriptionJob:
     def _process_one(self, r: SegmentResult):
         start_hms = segmod.seconds_to_hms(r.start_sec)
         end_hms = segmod.seconds_to_hms(r.end_sec)
-        self.cb.log(f"\n[{r.index}/{self.total}] 切割 {start_hms} → {end_hms}...")
+        self.cb.log(t("job.log.cutting", index=r.index, total=self.total,
+                      start=start_hms, end=end_hms))
 
         temp_path = os.path.join(
             config.SCRIPT_DIR, f"{self._temp_prefix}{r.index - 1}{self._ext}"
@@ -178,16 +181,17 @@ class TranscriptionJob:
                 self._mark_failed(
                     r, "切割失敗",
                     f"第 {r.index} 段切割失敗，請確認 ffmpeg 是否正常運作",
+                    ui_reason=t("job.msg.cut_failed", index=r.index),
                 )
                 return
 
-            self.cb.log(f"[{r.index}/{self.total}] 上傳至 Gemini，等待轉錄...")
+            self.cb.log(t("job.log.uploading", index=r.index, total=self.total))
             text = self._transcribe_with_retry(r, temp_path)
             if text is None:
                 return   # 已由 _mark_failed 記錄原因，繼續下一段
             r.text = text
             r.error = None
-            self.cb.log(f"[{r.index}/{self.total}] 完成")
+            self.cb.log(t("job.log.segment_done", index=r.index, total=self.total))
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
@@ -211,10 +215,7 @@ class TranscriptionJob:
                     logger.write_log(
                         f"轉錄中止 -> {type(e).__name__} | HTTP 429 配額用盡", "ERROR"
                     )
-                    raise QuotaExhausted(
-                        "已達 Gemini API 用量上限（可能是短時間內請求過多，或當日額度用盡）。"
-                        "已完成的段落已存檔，請稍後用「重試失敗的段落」補跑。"
-                    ) from e
+                    raise QuotaExhausted(t("job.msg.quota_exhausted")) from e
 
                 classified = transcriber.classify_error(e)
                 if classified is None:
@@ -232,7 +233,7 @@ class TranscriptionJob:
                     f"{status} | {progress}",
                     "ERROR",
                 )
-                self.cb.log(f"[錯誤] {reason}")
+                self.cb.log(t("job.log.error", reason=reason))
 
                 retries_done += 1
                 if self.auto_retry:
@@ -240,24 +241,41 @@ class TranscriptionJob:
                         return self._mark_failed(
                             r, status,
                             f"{reason}，已自動重試 {config.MAX_AUTO_RETRIES} 次仍失敗",
+                            ui_reason=t("job.msg.retry_exhausted", reason=reason,
+                                        max=config.MAX_AUTO_RETRIES),
                         )
-                    self.cb.log(
-                        f"[{r.index}/{self.total}] 自動重試中... "
-                        f"({retries_done}/{config.MAX_AUTO_RETRIES})"
-                    )
+                    self.cb.log(t(
+                        "job.log.auto_retrying", index=r.index, total=self.total,
+                        count=retries_done, max=config.MAX_AUTO_RETRIES,
+                    ))
                     self._wait_before_retry(r, retries_done)
                 else:
-                    if not self.cb.ask(f"{reason}，是否重試？"):
+                    if not self.cb.ask(t("job.msg.ask_retry", reason=reason)):
                         return self._mark_failed(
-                            r, status, f"{reason}（使用者取消重試）"
+                            r, status, f"{reason}（使用者取消重試）",
+                            ui_reason=t("job.msg.retry_cancelled", reason=reason),
                         )
-                    self.cb.log(f"[{r.index}/{self.total}] 重試中...")
+                    self.cb.log(t("job.log.retrying", index=r.index, total=self.total))
 
-    def _mark_failed(self, r: SegmentResult, status: str, reason: str) -> None:
-        """標記單段最終失敗，回傳 None 讓呼叫端繼續下一段。"""
+    def _mark_failed(self, r: SegmentResult, status: str, reason: str,
+                     ui_reason: str | None = None) -> None:
+        """標記單段最終失敗，回傳 None 讓呼叫端繼續下一段。
+
+        `reason` 與 `ui_reason` 是刻意分開的兩路（見 general.md「資料與顯示
+        文字必須分離」）：
+
+        - `reason` 存進 `r.error`，會被 `_write_output` 寫進 `_transcript.txt`
+          的失敗佔位符——**是資料，固定繁中不翻**。跟著介面語言變的話，同一個
+          使用者不同時期產的逐字稿會對不起來。
+        - `ui_reason` 只推 UI 記錄框，走 `t()` 跟著介面語言。
+
+        維持**一個呼叫同時處理兩邊**（windows-tool.md 要求）：拆成兩套呼叫
+        一定會有地方漏記。`ui_reason` 省略時退回 `reason`。
+        """
         r.error = reason
         logger.write_log(f"第{r.index}段 最終失敗 -> {status}", "ERROR")
-        self.cb.log(f"[{r.index}/{self.total}] {reason}，標記後繼續")
+        self.cb.log(t("job.log.marked_failed", index=r.index, total=self.total,
+                      reason=ui_reason if ui_reason is not None else reason))
         return None
 
     def _wait_before_retry(self, r: SegmentResult, retry_count: int):
@@ -270,13 +288,13 @@ class TranscriptionJob:
         for remaining in range(config.RETRY_WAIT_SECONDS, 0, -1):
             self.cb.progress(
                 self.done_count, self.total,
-                f"第 {r.index} 段重試中... {remaining} 秒 "
-                f"({retry_count}/{config.MAX_AUTO_RETRIES})",
+                t("job.status.retry_wait", index=r.index, seconds=remaining,
+                  count=retry_count, max=config.MAX_AUTO_RETRIES),
             )
             self._sleep(1)
         self.cb.progress(
             self.done_count, self.total,
-            f"{self.done_count} / {self.total} 段完成",
+            t("job.status.segments_done", done=self.done_count, total=self.total),
         )
 
     # ---- 輸出 ----
@@ -285,7 +303,7 @@ class TranscriptionJob:
 
         可重複呼叫：補跑成功後再叫一次就會原地覆寫同一個檔案。
         """
-        self.cb.log("\n合併逐字稿...")
+        self.cb.log(t("job.log.merging"))
         lines = []
         for r in self.results:
             start_hms = segmod.seconds_to_hms(r.start_sec)
