@@ -32,6 +32,12 @@
 
 ## 更新記錄
 
+### 2026-08-17 — launcher.ps1 拿掉失效的 winget Python 安裝步驟
+
+`winget install --id Python.Python.3`（不帶次版號）已被上游下架，靜默失效。改成
+只檢查 uv，`uv venv venv --python 3.13` 讓 uv 自己下載 Python。步驟從 [1/4]~[4/4]
+改成 [1/3]~[3/3]。ffmpeg 的 ARM64 模擬執行提醒維持不動。
+
 ### 2026-08-16（六）— 介面多語言（i18n）
 
 介面支援 繁體中文／简体中文／English／日本語，重開生效。
