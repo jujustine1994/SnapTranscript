@@ -2,11 +2,13 @@
 
 ## 待辦
 
-- [ ] **實測 GitHub Release 發布流程**（2026-08-26 加）。首次用本專案照
-      `~/.claude/project-rules/windows-tool/windows-tool-release.md` SOP 跑一次
-      完整發布（`git archive` 打包 → 建 tag → `gh release create`），驗證使用者
-      體驗「下載 zip → 解壓 → 雙擊啟動器」全程可行。視實測結果回頭更新母資料夾
-      SOP 文件（發現遺漏或跟現況不符的步驟）
+- [x] **實測 GitHub Release 發布流程** — 2026-08-26 通過。照
+      `~/.claude/project-rules/windows-tool/windows-tool-release.md` SOP 演練一輪
+      （`git archive` 打包 → 本機建 tag → 解壓到乾淨資料夾直接跑 `src/main.py`，
+      抓到「Language」首次啟動視窗成功彈出），確認打包內容、路徑計算、目錄結構
+      在解壓後都正常。過程中順手抓到 README 一處過時描述（API Key 已改「儲存」
+      按鈕，README 還寫舊的「記住」勾選框）並修正。SOP 本身跑得通，**母資料夾
+      文件不需要更新**。演練用的本機 tag 與 zip 已清除，未留痕跡
 - [x] 實際執行測試（選音訊 → 轉錄 → 輸出）— 2026-08-01 實測通過
 - [x] 確認 Gemini 回應內容符合預期格式 — 中英文都正確，說話者標籤可用
 - [x] 擷取範圍功能 end-to-end 實測 — 2026-08-01 用 44 分鐘 m4a 取 00:10:00→00:13:00 通過
