@@ -2,6 +2,11 @@
 
 ## 待辦
 
+- [ ] **實測 GitHub Release 發布流程**（2026-08-26 加）。首次用本專案照
+      `~/.claude/project-rules/windows-tool/windows-tool-release.md` SOP 跑一次
+      完整發布（`git archive` 打包 → 建 tag → `gh release create`），驗證使用者
+      體驗「下載 zip → 解壓 → 雙擊啟動器」全程可行。視實測結果回頭更新母資料夾
+      SOP 文件（發現遺漏或跟現況不符的步驟）
 - [x] 實際執行測試（選音訊 → 轉錄 → 輸出）— 2026-08-01 實測通過
 - [x] 確認 Gemini 回應內容符合預期格式 — 中英文都正確，說話者標籤可用
 - [x] 擷取範圍功能 end-to-end 實測 — 2026-08-01 用 44 分鐘 m4a 取 00:10:00→00:13:00 通過
