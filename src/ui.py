@@ -15,6 +15,7 @@ from google import genai
 
 import i18n
 import job
+import update_checker
 from audio import download_youtube_audio, get_audio_duration
 from config import (
     CONFIG_PATH,
@@ -145,6 +146,13 @@ class SnapTranscriptApp:
         combo.pack(side="left")
         combo.bind("<<ComboboxSelected>>", self._on_language_selected)
 
+        # 進階設定入口（目前只有「檢查更新」；日後其他設定項都掛在這個
+        # Toplevel 裡，不做即時分頁）。齒輪符號跨語言通用，按鈕本身不需要
+        # 翻譯文字。
+        ttk.Button(
+            lang_frame, text="⚙", width=3, command=self._open_settings,
+        ).pack(side="left", padx=(6, 0))
+
     def _selected_lang_code(self) -> str:
         """把下拉選單顯示的名稱換回代號。取不到就維持原設定，不亂改。"""
         chosen = self.lang_var.get()
@@ -192,6 +200,128 @@ class SnapTranscriptApp:
             return
         job.cleanup_temp_files()
         self.root.destroy()
+
+    # ---- 進階設定（目前只有版本更新，未來的一般設定項都加在這個 Toplevel 裡）----
+    def _open_settings(self):
+        win = tk.Toplevel(self.root)
+        win.title(t("gui.dlg.settings.title"))
+        win.resizable(False, False)
+        win.grab_set()
+
+        self._build_update_section(win)
+
+        ttk.Button(win, text=t("gui.btn.close"), command=win.destroy).pack(
+            pady=(0, 14)
+        )
+
+    # ------------------------------------------------------------------
+    # 版本更新區塊
+    #
+    # ⚠ 全程沒有任何一步自動觸發：「檢查更新」只讀不寫；有新版本才會出現
+    # 「一鍵安裝」，按下去還要先跳確認框，使用者按確定才真的動檔案。
+    # 更新完不自動重啟（跟語言切換不同），只跳訊息框請使用者自己關掉重開，
+    # 因為更新可能動到正在執行中的模組，自動重啟的邊界情況不值得為手動
+    # 觸發的功能多繞。
+    # ------------------------------------------------------------------
+    def _build_update_section(self, parent: tk.Widget):
+        section = ttk.LabelFrame(parent, text=t("gui.frame.update"), padding=8)
+        section.pack(fill="x", padx=14, pady=14)
+
+        row = ttk.Frame(section)
+        row.pack(anchor="w", fill="x")
+
+        self._check_update_btn = ttk.Button(
+            row, text=t("gui.btn.check_update"), command=self._on_check_update,
+        )
+        self._check_update_btn.pack(side="left")
+
+        self._install_update_btn = ttk.Button(
+            row, text=t("gui.btn.install_update"), command=self._on_install_update,
+        )
+        # 有新版本才 pack，預設不顯示
+
+        self._update_status_var = tk.StringVar(value="")
+        ttk.Label(
+            section, textvariable=self._update_status_var,
+            foreground="gray", justify="left", anchor="w", wraplength=360,
+        ).pack(anchor="w", fill="x", pady=(8, 0))
+
+        self._pending_update_summary = ""
+
+    def _on_check_update(self):
+        self._check_update_btn.config(state="disabled")
+        self._install_update_btn.pack_forget()
+        self._update_status_var.set(t("gui.update.checking"))
+        threading.Thread(target=self._check_update_worker, daemon=True).start()
+
+    def _check_update_worker(self):
+        """背景執行緒：跑 git fetch，不可卡住主視窗（見 windows-tool-templates.md）。"""
+        result = update_checker.check_for_update()
+        try:
+            self.root.after(0, self._on_check_update_done, result)
+        except (RuntimeError, tk.TclError):
+            pass  # 視窗已關閉，結果沒人要了
+
+    def _on_check_update_done(self, result: dict):
+        self._check_update_btn.config(state="normal")
+        status = result.get("status")
+
+        if status == "no_git":
+            self._update_status_var.set(t("gui.update.no_git"))
+        elif status == "offline":
+            self._update_status_var.set(t("gui.update.offline"))
+        elif status == "dirty":
+            self._update_status_var.set(t("gui.update.dirty"))
+        elif status == "ahead":
+            self._update_status_var.set(t("gui.update.ahead"))
+        elif status == "up_to_date":
+            self._update_status_var.set(t("gui.update.up_to_date"))
+        elif status == "update_available":
+            self._pending_update_summary = result.get("summary", "")
+            self._update_status_var.set(
+                t("gui.update.available", count=result.get("commits", 0))
+            )
+            self._install_update_btn.pack(side="left", padx=(8, 0))
+        else:
+            self._update_status_var.set(
+                t("gui.update.error", msg=result.get("message", status or ""))
+            )
+
+    def _on_install_update(self):
+        if not messagebox.askyesno(
+            t("gui.dlg.update_confirm.title"),
+            t("gui.dlg.update_confirm.body", summary=self._pending_update_summary),
+        ):
+            return
+        self._check_update_btn.config(state="disabled")
+        self._install_update_btn.config(state="disabled")
+        self._update_status_var.set(t("gui.update.installing"))
+        threading.Thread(target=self._install_update_worker, daemon=True).start()
+
+    def _install_update_worker(self):
+        result = update_checker.install_update()
+        try:
+            self.root.after(0, self._on_install_update_done, result)
+        except (RuntimeError, tk.TclError):
+            pass
+
+    def _on_install_update_done(self, result: dict):
+        self._check_update_btn.config(state="normal")
+        status = result.get("status")
+
+        if status == "updated":
+            self._install_update_btn.pack_forget()
+            self._update_status_var.set(
+                t("gui.update.updated", commit=result.get("commit", ""))
+            )
+            messagebox.showinfo(
+                t("gui.dlg.update_done.title"), t("gui.dlg.update_done.body")
+            )
+        else:
+            self._install_update_btn.config(state="normal")
+            self._update_status_var.set(
+                t("gui.update.error", msg=result.get("message", status or ""))
+            )
 
     # ---- UI 建置 ----
     def _build_ui(self):

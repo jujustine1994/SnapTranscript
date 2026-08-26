@@ -7,9 +7,24 @@
 import json
 import os
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _find_project_root() -> str:
+    """往上找 launcher.ps1 所在目錄＝專案根目錄（同 logger.py 的做法）。"""
+    d = _SRC_DIR
+    while True:
+        if os.path.exists(os.path.join(d, "launcher.ps1")):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            return _SRC_DIR
+        d = parent
+
+
+SCRIPT_DIR = _find_project_root()  # .env 與暫存檔的位置：專案根目錄，不是 src/
 ENV_PATH = os.path.join(SCRIPT_DIR, ".env")
-CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
+CONFIG_PATH = os.path.join(_SRC_DIR, "config.json")
 DEFAULT_CHUNK_SECONDS = 30 * 60  # 預設 30 分鐘
 MODEL_NAME = "gemini-flash-latest"
 MAX_AUTO_RETRIES = 5  # 「自動重試」勾選時，單段最多自動重試次數

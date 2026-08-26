@@ -25,7 +25,7 @@ import tkinter as tk
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"))
 
 import i18n
 import main as main_mod
@@ -39,9 +39,8 @@ LANGS = [code for code, _, _ in i18n.LANGUAGES]
 
 # ---- 第 3 條的掃描範圍 ----
 #
-# ⚠ 不可以照抄 pattern_i18n.py 的 `SRC = .../"src"`：本專案的 .py 在**根目錄**，
-# 那樣寫會收集到 0 個檔案、測試照樣綠燈（靜默零覆蓋）。所以掃 ROOT + 排除清單，
-# 而且下面第 4 條會 assert 主程式真的在名單裡。
+# 掃 ROOT（含 src/）+ 排除清單，不是只掃 src/：換掃描範圍時很容易漏排或
+# 漏收，下面第 4 條會 assert 主程式真的在名單裡，靜默零覆蓋會被抓到。
 SKIP_DIRS = {"venv", "__pycache__", ".git", ".superpowers", "locales", "tests",
              "docs", "logs", "cache",
              # scripts/ 是給維護者的驗收工具，不是產品 UI；transcript_golden.py

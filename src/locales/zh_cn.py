@@ -169,4 +169,26 @@ STRINGS: dict[str, str] = {
                                    "否则合并后的段落会长到可能超出 Gemini 的输出上限",
     "err.seg.range_beyond_audio":  "提取范围超出音频总长度，请重新设置",
     "err.gemini.file_failed":      "Gemini 文件处理失败（状态：{state}），请重试",
+
+    # ---- 高级设置窗口 ----
+    "gui.dlg.settings.title":      "高级设置",
+
+    # ---- 版本更新（高级设置窗口内） ----
+    "gui.frame.update":            " 版本更新 ",
+    "gui.btn.check_update":        "检查更新",
+    "gui.btn.install_update":      "一键安装",
+    "gui.update.checking":         "检查中...",
+    "gui.update.no_git":           "此版本无法自动更新，请至 GitHub 页面下载最新版本。",
+    "gui.update.offline":          "连不上 GitHub，请确认网络连接后再试一次。",
+    "gui.update.dirty":            "侦测到本机程序码有手动修改，已略过（避免覆盖你的修改）。",
+    "gui.update.ahead":            "本机有尚未同步的变更，已略过（避免覆盖你的修改）。",
+    "gui.update.up_to_date":       "已是最新版本。",
+    "gui.update.available":        "发现新版本（{count} 笔变更），点「一键安装」更新。",
+    "gui.dlg.update_confirm.title": "确认安装更新",
+    "gui.dlg.update_confirm.body": "即将更新程序码，需要手动重启程序才会生效。\n\n本次变更：\n{summary}\n\n是否继续？",
+    "gui.update.installing":       "安装中...",
+    "gui.update.updated":          "已更新到最新版本（{commit}），请关闭程序后重新打开。",
+    "gui.dlg.update_done.title":   "更新完成",
+    "gui.dlg.update_done.body":    "已安装最新版本，请关闭这个窗口后重新双击启动器，让新版本生效。",
+    "gui.update.error":            "检查更新失败：{msg}",
 }

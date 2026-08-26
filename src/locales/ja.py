@@ -177,4 +177,26 @@ STRINGS: dict[str, str] = {
                                    "Gemini の出力上限を超える可能性があります",
     "err.seg.range_beyond_audio":  "抽出範囲が音声全体の長さを超えています。設定し直してください",
     "err.gemini.file_failed":      "Gemini のファイル処理に失敗しました（状態：{state}）。再試行してください。",
+
+    # ---- 詳細設定ウィンドウ ----
+    "gui.dlg.settings.title":      "詳細設定",
+
+    # ---- アップデート（詳細設定ウィンドウ内） ----
+    "gui.frame.update":            " アップデート ",
+    "gui.btn.check_update":        "更新を確認",
+    "gui.btn.install_update":      "ワンクリックインストール",
+    "gui.update.checking":         "確認中...",
+    "gui.update.no_git":           "このバージョンは自動更新できません。GitHub ページから最新版をダウンロードしてください。",
+    "gui.update.offline":          "GitHub に接続できません。ネットワーク接続を確認して再度お試しください。",
+    "gui.update.dirty":            "ローカルのコードに手動変更が検出されたためスキップしました（変更を上書きしないため）。",
+    "gui.update.ahead":            "未同期のローカル変更があるためスキップしました（変更を上書きしないため）。",
+    "gui.update.up_to_date":       "最新バージョンです。",
+    "gui.update.available":        "新しいバージョンがあります（{count} 件の変更）。「ワンクリックインストール」で更新してください。",
+    "gui.dlg.update_confirm.title": "更新の確認",
+    "gui.dlg.update_confirm.body": "コードを更新します。反映には手動での再起動が必要です。\n\n今回の変更：\n{summary}\n\n続行しますか？",
+    "gui.update.installing":       "インストール中...",
+    "gui.update.updated":          "最新バージョン（{commit}）に更新しました。プログラムを閉じて再度開いてください。",
+    "gui.dlg.update_done.title":   "更新完了",
+    "gui.dlg.update_done.body":    "最新バージョンをインストールしました。このウィンドウを閉じてから起動ファイルをダブルクリックし直してください。",
+    "gui.update.error":            "更新確認に失敗しました：{msg}",
 }

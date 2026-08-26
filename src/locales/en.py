@@ -180,4 +180,28 @@ STRINGS: dict[str, str] = {
                                    "enough to exceed Gemini's output limit",
     "err.seg.range_beyond_audio":  "The selected range is beyond the total audio length — please adjust it",
     "err.gemini.file_failed":      "Gemini failed to process the file (state: {state}). Please retry.",
+
+    # ---- Advanced settings dialog ----
+    "gui.dlg.settings.title":      "Advanced Settings",
+
+    # ---- Updates (inside the advanced settings dialog) ----
+    "gui.frame.update":            " Updates ",
+    "gui.btn.check_update":        "Check for Updates",
+    "gui.btn.install_update":      "Install Update",
+    "gui.update.checking":         "Checking...",
+    "gui.update.no_git":           "This copy can't auto-update. Please download the latest version from GitHub.",
+    "gui.update.offline":          "Could not reach GitHub. Check your network connection and try again.",
+    "gui.update.dirty":            "Local code changes detected, skipped (to avoid overwriting your changes).",
+    "gui.update.ahead":            "Local commits not yet synced, skipped (to avoid overwriting your changes).",
+    "gui.update.up_to_date":       "You are on the latest version.",
+    "gui.update.available":        "New version available ({count} changes). Click \"Install Update\" to update.",
+    "gui.dlg.update_confirm.title": "Confirm Update",
+    "gui.dlg.update_confirm.body": "This will update the app code. You will need to restart the app "
+                                   "manually afterwards.\n\nChanges:\n{summary}\n\nContinue?",
+    "gui.update.installing":       "Installing...",
+    "gui.update.updated":          "Updated to the latest version ({commit}). Please close and reopen the app.",
+    "gui.dlg.update_done.title":   "Update Complete",
+    "gui.dlg.update_done.body":    "The latest version has been installed. Close this window and "
+                                   "double-click the launcher again to apply it.",
+    "gui.update.error":            "Update check failed: {msg}",
 }

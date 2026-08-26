@@ -197,10 +197,10 @@ Write-Host ""
 # ======================================
 # 執行主程式
 # ======================================
-python main.py
+python src\main.py
 $exitCode = $LASTEXITCODE
 
-if (Test-Path "__pycache__") { Remove-Item -Recurse -Force "__pycache__" }
+if (Test-Path "src\__pycache__") { Remove-Item -Recurse -Force "src\__pycache__" }
 
 if ($exitCode -ne 0) {
     Write-Log "主程式異常結束（exit code $exitCode）" "ERROR"

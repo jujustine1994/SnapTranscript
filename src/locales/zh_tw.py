@@ -178,4 +178,26 @@ STRINGS: dict[str, str] = {
     # 那個字面**同時是例外訊息又是分類鍵＝資料**，一翻就自己把自己查斷：
     # classify_error 回 None → 空白結果不再重試 → 直接中止整個任務，而且不會
     # 有任何錯誤，測試也抓不到。維持寫死繁中，靠 test_i18n 的精確豁免放行。
+
+    # ---- 進階設定視窗 ----
+    "gui.dlg.settings.title":      "進階設定",
+
+    # ---- 版本更新（進階設定視窗內） ----
+    "gui.frame.update":            " 版本更新 ",
+    "gui.btn.check_update":        "檢查更新",
+    "gui.btn.install_update":      "一鍵安裝",
+    "gui.update.checking":         "檢查中...",
+    "gui.update.no_git":           "此版本無法自動更新，請至 GitHub 頁面下載最新版本。",
+    "gui.update.offline":          "連不上 GitHub，請確認網路連線後再試一次。",
+    "gui.update.dirty":            "偵測到本機程式碼有手動修改，已略過（避免覆蓋你的修改）。",
+    "gui.update.ahead":            "本機有尚未同步的變更，已略過（避免覆蓋你的修改）。",
+    "gui.update.up_to_date":       "已是最新版本。",
+    "gui.update.available":        "發現新版本（{count} 筆變更），點「一鍵安裝」更新。",
+    "gui.dlg.update_confirm.title": "確認安裝更新",
+    "gui.dlg.update_confirm.body": "即將更新程式碼，需要手動重啟程式才會生效。\n\n本次變更：\n{summary}\n\n是否繼續？",
+    "gui.update.installing":       "安裝中...",
+    "gui.update.updated":          "已更新到最新版本（{commit}），請關閉程式後重新開啟。",
+    "gui.dlg.update_done.title":   "更新完成",
+    "gui.dlg.update_done.body":    "已安裝最新版本，請關閉這個視窗後重新雙擊啟動器，讓新版本生效。",
+    "gui.update.error":            "檢查更新失敗：{msg}",
 }
