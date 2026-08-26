@@ -29,7 +29,7 @@
 
 1. 雙擊 `Run SnapTranscript.bat`
 2. 等待虛擬環境建立完成
-3. 在視窗中輸入 Gemini API Key（勾選「記住」可自動儲存至 `.env`）
+3. 在視窗中輸入 Gemini API Key，按「儲存」寫入 `.env`（下次開啟會自動帶入）
 
 ## 介面語言
 
