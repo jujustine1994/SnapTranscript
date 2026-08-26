@@ -32,6 +32,43 @@
 
 ## 更新記錄
 
+### 2026-08-26 — 依 windows-tool 規則整理專案目錄結構
+
+根目錄原本堆了 9 個 `.py`、`config.json`、`locales/` 和 5 份 MD 文件，不符合
+`windows-tool.md` 規定的「根目錄只留啟動器 / README / requirements」。分兩階段搬移：
+
+- **MD 文件**搬進 `docs/`（`ARCHITECTURE.md`／`CHANGELOG.md`／`PITFALLS.md`／
+  `TODO.md`），`README.md` 留根目錄。順手刪掉兩份已經沒用的舊工作檔：
+  `next-session-prompt.md`（過時的交接提示詞，功能已被記憶系統取代）與
+  `I18N_RESUME.md`（i18n 遷移完成紀錄，內容與本檔重疊）。
+- **原始碼**（全部 `.py`、`config.json`、`locales/`）搬進 `src/`。連動修正：
+  - `config.py`：`SCRIPT_DIR`（`.env` 與暫存音訊段落的存放位置）改用
+    `_find_project_root()` 往上找 `launcher.ps1` 定位專案根目錄，不再等於
+    `src/`；`CONFIG_PATH` 隨 `config.json` 留在 `src/`。
+  - `update_checker.py`：`_SCRIPT_PATH` 同樣改成往上找專案根目錄，才找得到
+    根目錄的 `scripts/check_update.ps1`。
+  - `scripts/check_update.ps1`：`$CodePaths` 原本寫死根目錄的檔名清單
+    （`main.py`／`ui.py`／`locales` 等），搬移後這些路徑已不存在，比對會
+    靜默抓不到任何差異——改成單一 `"src"` 涵蓋全部。
+  - `launcher.ps1`：`python main.py` 改成 `python src\main.py`，`__pycache__`
+    清理路徑同步改成 `src\__pycache__`。
+  - `tests/*.py`、`scripts/transcript_golden.py`：`sys.path` 插入點從專案根
+    目錄改成 `<root>/src`。
+
+124 個測試全過，並實際啟動 `src/main.py` 確認 GUI 正常開啟無 crash。
+
+### 2026-08-23 — 新增「進階設定」視窗與手動檢查更新
+
+主視窗語言列右側加一顆 ⚙ 按鈕，開啟新的「進階設定」Toplevel（目前只放版本
+更新，日後其他設定項會陸續加進來，不影響現有的語言下拉選單）。視窗內含
+「檢查更新」／「一鍵安裝」按鈕：`scripts/check_update.ps1` 比對本機與 GitHub
+上游的差異，只碰程式碼路徑（`ui.py`／`main.py`／`i18n.py`／`locales/`／
+`requirements.txt`／`launcher.ps1` 等），偵測到本機手動改過或有未 push 的
+commit 會自動略過，避免覆蓋使用者的修改。全程沒有自動觸發：檢查只讀不寫，
+有新版本才顯示「一鍵安裝」，按下去還要先跳確認框列出本次變更。安裝完不會
+自動重啟，跳訊息框請使用者自己關閉重開。`git fetch` 一律丟到背景執行緒跑，
+不卡住主視窗。四語（繁中／简中／英文／日文）介面文字同步補齊。
+
 ### 2026-08-17 — launcher.ps1 拿掉失效的 winget Python 安裝步驟
 
 `winget install --id Python.Python.3`（不帶次版號）已被上游下架，靜默失效。改成
