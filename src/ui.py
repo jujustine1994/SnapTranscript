@@ -473,8 +473,11 @@ class SnapTranscriptApp:
         ttk.Button(api_row, text=t("gui.btn.show"), width=5, command=self._toggle_api_show).pack(
             side="left", padx=(0, 8)
         )
-        self.save_key_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(api_row, text=t("gui.chk.remember"), variable=self.save_key_var).pack(side="left")
+        ttk.Button(api_row, text=t("gui.btn.save_key"), command=self._save_api_key).pack(
+            side="left", padx=(0, 8)
+        )
+        self.api_saved_label = tk.Label(api_row, text="", foreground="green", font=("", 9))
+        self.api_saved_label.pack(side="left")
 
         tk.Label(
             self.frame_api,
@@ -726,6 +729,15 @@ class SnapTranscriptApp:
         if key:
             self.api_var.set(key)
 
+    def _save_api_key(self):
+        api_key = self.api_var.get().strip()
+        if not api_key:
+            messagebox.showerror(t("gui.dlg.error.title"), t("gui.msg.no_api_key"))
+            return
+        set_key(ENV_PATH, "GEMINI_API_KEY", api_key)
+        self.api_saved_label.config(text=t("gui.lbl.api_saved"))
+        self.root.after(3000, lambda: self.api_saved_label.config(text=""))
+
     # ---- 執行邏輯 ----
     def _start(self):
         api_key = self.api_var.get().strip()
@@ -780,13 +792,9 @@ class SnapTranscriptApp:
                 messagebox.showerror(t("gui.dlg.format_error.title"), str(e))
                 return
 
-        # 儲存 API Key（只下載模式不需要）
-        if not download_only:
-            if not api_key:
-                messagebox.showerror(t("gui.dlg.error.title"), t("gui.msg.no_api_key"))
-                return
-            if self.save_key_var.get():
-                set_key(ENV_PATH, "GEMINI_API_KEY", api_key)
+        if not download_only and not api_key:
+            messagebox.showerror(t("gui.dlg.error.title"), t("gui.msg.no_api_key"))
+            return
 
         client = genai.Client(api_key=api_key) if not download_only else None
 

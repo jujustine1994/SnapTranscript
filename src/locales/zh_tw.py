@@ -47,7 +47,8 @@ STRINGS: dict[str, str] = {
 
     # ---- API Key ----
     "gui.btn.show":                "顯示",
-    "gui.chk.remember":            "記住",
+    "gui.btn.save_key":            "儲存",
+    "gui.lbl.api_saved":           "✓ 已儲存",
     "gui.lbl.api_notice":          "🔒 API Key 僅儲存於本機 .env 檔，請勿將 Key 提供給他人。",
     "gui.link.api_help":           "如何取得 API Key？",
 

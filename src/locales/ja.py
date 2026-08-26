@@ -47,7 +47,8 @@ STRINGS: dict[str, str] = {
 
     # ---- API キー ----
     "gui.btn.show":                "表示",
-    "gui.chk.remember":            "記憶",
+    "gui.btn.save_key":            "保存",
+    "gui.lbl.api_saved":           "✓ 保存しました",
     "gui.lbl.api_notice":          "🔒 API キーはローカルの .env ファイルにのみ保存されます。"
                                    "他人に渡さないでください。",
     "gui.link.api_help":           "API キーの取得方法",

@@ -48,7 +48,8 @@ STRINGS: dict[str, str] = {
 
     # ---- API key ----
     "gui.btn.show":                "Show",
-    "gui.chk.remember":            "Remember",
+    "gui.btn.save_key":            "Save",
+    "gui.lbl.api_saved":           "✓ Saved",
     "gui.lbl.api_notice":          "🔒 Your API key is stored only in the local .env file. "
                                    "Never share it with anyone.",
     "gui.link.api_help":           "How do I get an API key?",
