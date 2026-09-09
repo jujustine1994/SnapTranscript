@@ -89,6 +89,21 @@ class SnapTranscriptApp:
 
         self.root.geometry(f"{width}x{height}+{x}+{y}")
 
+    def _grow_window_if_needed(self):
+        """任務完成才動態 pack 的按鈕（開啟資料夾／重試失敗的 N 段）沒被算進
+        `_position_window` 那次 reqheight——當時它們還沒 pack，佔用高度是 0，
+        所以視窗高度定死後按鈕會被畫在下緣以外看不到。`resizable(False, False)`
+        只擋使用者手動拖曳，不擋程式自己改 geometry，所以這裡量一次目前實際
+        需要的高度，不夠就往下補高，寬度與位置不動。
+        """
+        self.root.update_idletasks()
+        needed = self.root.winfo_reqheight()
+        if needed > self.root.winfo_height():
+            width = self.root.winfo_width()
+            x = self.root.winfo_x()
+            y = self.root.winfo_y()
+            self.root.geometry(f"{width}x{needed}+{x}+{y}")
+
     # ---- 關閉視窗 ----
     def _on_close(self):
         """關視窗前確認並清暫存檔。
@@ -1072,6 +1087,7 @@ class SnapTranscriptApp:
                         if failed_count > 0:
                             self.btn_retry_failed.config(text=self._retry_button_text())
                             self.btn_retry_failed.pack(side="left", padx=(6, 0))
+                    self._grow_window_if_needed()
         except queue.Empty:
             pass
         self._poll_after_id = self.root.after(100, self._poll_queue)
